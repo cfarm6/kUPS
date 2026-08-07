@@ -604,11 +604,23 @@ class CSVRStep[State](Propagator[State]):
 
         # R₂ ~ χ²(N_dof-1) [dimensionless]
         dof_minus_one = degrees_of_freedom - 1
-        chi_squared_noise = jnp.where(
-            dof_minus_one > 0,
-            jax.random.chisquare(key2, df=dof_minus_one, dtype=float),
-            0.0,
-        )
+        chi2_draws = getattr(state, "chi2_draws", None)
+        if jax.default_backend() == "cpu" or chi2_draws is None:
+            chi_squared_noise = jnp.where(
+                dof_minus_one > 0,
+                jax.random.chisquare(key2, df=dof_minus_one, dtype=float),
+                0.0,
+            )
+        else:
+            # tt port: host-side chi2 substitution (wayfinder #44). The device
+            # chisquare traces two nested gamma rejection whiles that crash the
+            # tt-mlir while converter; the run driver precomputes the draw on
+            # the host per step (df = 3N-4) and carries it in the state — the
+            # donated cycle input — so the traced program keeps only the
+            # counted step-loop while.
+            chi_squared_noise = jnp.where(
+                dof_minus_one > 0, chi2_draws[state.step[0]], 0.0
+            )
 
         # CSVR scaling coefficients
         # c₁ = e^(-Δt/τ) [dimensionless]
