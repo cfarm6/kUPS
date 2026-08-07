@@ -57,3 +57,7 @@ docs/reference
 *.log
 *.dat
 
+
+# TT device introspection diagnostics dumped by this repo's TT runs
+# (fabric mesh mapping, inspector logs, kernel paths)
+**/*generated/
