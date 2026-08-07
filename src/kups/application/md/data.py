@@ -291,8 +291,20 @@ def md_state_from_ase(
 
     if key is not None:
         # Sample momenta from Maxwell-Boltzmann: p_i ~ N(0, sqrt(m_i * kT))
-        std = jnp.sqrt(p.masses * config.temperature * BOLTZMANN_CONSTANT)
-        momenta = jax.random.normal(key, (n_atoms, 3)) * std[:, None]
+        if jax.default_backend() == "cpu":
+            std = jnp.sqrt(p.masses * config.temperature * BOLTZMANN_CONSTANT)
+            momenta = jax.random.normal(key, (n_atoms, 3)) * std[:, None]
+        else:
+            # tt port: the device RNG float pipeline (threefry -> uniform ->
+            # normal) yields NaN on tt-xla/tt-mlir. Sample the one-shot init
+            # momenta on CPU and transfer the result back to the active backend.
+            _cpu = jax.devices("cpu")[0]
+            _key = jax.device_put(key, _cpu)
+            _masses = jax.device_put(p.masses, _cpu)
+            with jax.default_device(_cpu):
+                _std = jnp.sqrt(_masses * config.temperature * BOLTZMANN_CONSTANT)
+                momenta = jax.random.normal(_key, (n_atoms, 3)) * _std[:, None]
+            momenta = jax.device_put(momenta)
         momenta = remove_center_of_mass_momentum(momenta, p.masses, p.system)
     else:
         momenta = jnp.zeros((n_atoms, 3))
