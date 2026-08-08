@@ -92,6 +92,18 @@ def pad_axis(operand: Array, to_pad: tuple[int, int], axis: int) -> Array:
     return jnp.pad(operand, padding)
 
 
+def use_mask_selection() -> bool:
+    """True on the tt backend: one-hot mask selection instead of case ops.
+
+    tt port (wayfinder #61): ``jax.lax.switch``/``cond`` emit ``stablehlo.case``,
+    which does not compile on the tt backend (ticket #43). On tt, kUPS computes
+    all branches and merges them with one-hot masks; other backends keep the
+    unchanged switch/cond path. Mirrors the #44 ``jax.default_backend() == "tt"``
+    trace-time gate.
+    """
+    return jax.default_backend() == "tt"
+
+
 def select_n(which: Array, *cands: Array) -> Array:
     """Like ``jax.lax.select_n`` but short-circuits when all candidates are identical.
 

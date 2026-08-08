@@ -22,6 +22,7 @@ Moves generate proposals compatible with [MCMCPropagator][kups.core.propagator.M
 from __future__ import annotations
 
 import abc
+import inspect
 from typing import Any, Callable, Protocol, override, runtime_checkable
 
 import jax
@@ -63,8 +64,9 @@ from kups.core.typing import (
     SystemId,
 )
 from kups.core.utils.functools import pipe
-from kups.core.utils.jax import dataclass, field, key_chain
+from kups.core.utils.jax import dataclass, field, key_chain, tree_map
 from kups.core.utils.math import triangular_3x3_matmul
+from kups.core.utils.ops import select_n, use_mask_selection
 from kups.core.utils.position import (
     center_of_mass,
     to_absolute_positions,
@@ -344,7 +346,11 @@ class ParticleTranslationMove[State](MonteCarloMove[State, ParticlePositionChang
     )
 
     def __call__(
-        self, key: Array, state: State, /
+        self,
+        key: Array,
+        state: State,
+        /,
+        enabled: Array | None = None,
     ) -> tuple[ParticlePositionChanges, LogProbabilityRatio]:
         particles = self.positions(state)
         n_sys = particles.data.system.num_labels
@@ -381,7 +387,11 @@ class GroupTranslationMove[State](MonteCarloMove[State, ParticlePositionChanges]
     )
 
     def __call__(
-        self, key: Array, state: State, /
+        self,
+        key: Array,
+        state: State,
+        /,
+        enabled: Array | None = None,
     ) -> tuple[ParticlePositionChanges, LogProbabilityRatio]:
         n_sys = self.particles(state).data.system.num_labels
         changes = propose_group_translation(
@@ -415,7 +425,11 @@ class GroupRotationMove[State](MonteCarloMove[State, ParticlePositionChanges]):
     capacity: View[State, Capacity[int]] = field(static=True)
 
     def __call__(
-        self, key: Array, state: State, /
+        self,
+        key: Array,
+        state: State,
+        /,
+        enabled: Array | None = None,
     ) -> tuple[ParticlePositionChanges, LogProbabilityRatio]:
         n_sys = self.particles(state).data.system.num_labels
         changes = propose_group_rotation(
@@ -446,7 +460,11 @@ class ReinsertionMove[State](MonteCarloMove[State, ParticlePositionChanges]):
     capacity: View[State, Capacity[int]] = field(static=True)
 
     def __call__(
-        self, key: Array, state: State, /
+        self,
+        key: Array,
+        state: State,
+        /,
+        enabled: Array | None = None,
     ) -> tuple[ParticlePositionChanges, LogProbabilityRatio]:
         n_sys = self.positions(state).data.system.num_labels
         changes = propose_reinsertion(
@@ -576,6 +594,7 @@ def insert_random_motif(
     groups: Buffered[GroupId, HasMotifAndSystemIndex],
     cell: Table[SystemId, Cell[AnyPeriodicity]],
     capacity: Capacity[int],
+    enabled: Array | None = None,
 ) -> ExchangeChanges:
     """Generate a GCMC insertion move for random molecular motifs.
 
@@ -586,6 +605,10 @@ def insert_random_motif(
         groups: Current buffered group metadata.
         cell: Per-system cell parameters.
         capacity: Capacity constraints for state arrays.
+        enabled: Optional bool scalar; when provided, the capacity asserts are
+            gated with ``pred | ~enabled`` so the caller can run this branch
+            unconditionally (compute-all-branches) without unselected-branch
+            asserts firing (wayfinder #61). ``None`` keeps the asserts live.
 
     Returns:
         Exchange changes describing the insertion.
@@ -619,8 +642,9 @@ def insert_random_motif(
 
     # Find free particle slots using Buffered.select_free
     n_free_particles = (~particles.occupation).sum()
+    assert_gate = jnp.ones((), dtype=bool) if enabled is None else enabled
     runtime_assert(
-        n_free_particles >= capacity.size,
+        (n_free_particles >= capacity.size) | ~assert_gate,
         f"Array size insufficient, requested {capacity.size} free entries while available {{available}}.",
         fmt_args={"available": n_free_particles},
     )
@@ -632,7 +656,7 @@ def insert_random_motif(
     # Find free group slots using Buffered.select_free
     n_free_groups = (~groups.occupation).sum()
     runtime_assert(
-        n_free_groups >= n_sys,
+        (n_free_groups >= n_sys) | ~assert_gate,
         f"Array size insufficient, requested {n_sys} free entries while available {{available}}.",
         fmt_args={"available": n_free_groups},
     )
@@ -680,6 +704,7 @@ def delete_random_motif(
     particles: Buffered[ParticleId, HasPositionsGroupSystem],
     groups: Buffered[GroupId, HasMotifAndSystemIndex],
     capacity: Capacity[int],
+    enabled: Array | None = None,
 ) -> ExchangeChanges:
     """Generate a GCMC deletion move removing a random molecular group.
 
@@ -689,6 +714,9 @@ def delete_random_motif(
         particles: Current buffered particle positions.
         groups: Current buffered group metadata.
         capacity: Capacity constraints for state arrays.
+        enabled: Optional bool scalar, accepted for symmetry with
+            ``insert_random_motif`` (wayfinder #61). Deletion has no
+            selection-dependent asserts, so it is currently unused.
 
     Returns:
         Exchange changes describing the deletion.
@@ -800,7 +828,11 @@ class ExchangeMove[State](MonteCarloMove[State, ExchangeChanges]):
         return Table.arange(jnp.zeros((n_sys,)), label=SystemId)
 
     def propose_insertion(
-        self, key: Array, state: State, /
+        self,
+        key: Array,
+        state: State,
+        /,
+        enabled: Array | None = None,
     ) -> tuple[ExchangeChanges, LogProbabilityRatio]:
         """Propose inserting one motif at a uniformly random position per system.
 
@@ -812,6 +844,8 @@ class ExchangeMove[State](MonteCarloMove[State, ExchangeChanges]):
         Args:
             key: JAX PRNG key.
             state: Current simulation state.
+            enabled: Optional bool scalar gating the capacity asserts
+                (wayfinder #61); ``None`` keeps them live.
 
         Returns:
             ``(changes, log_ratio)`` where ``changes`` describes the inserted
@@ -824,11 +858,16 @@ class ExchangeMove[State](MonteCarloMove[State, ExchangeChanges]):
             self.groups(state),
             self.cell(state),
             self.capacity(state),
+            enabled=enabled,
         )
         return changes, self._zero_ratio(state)
 
     def propose_deletion(
-        self, key: Array, state: State, /
+        self,
+        key: Array,
+        state: State,
+        /,
+        enabled: Array | None = None,
     ) -> tuple[ExchangeChanges, LogProbabilityRatio]:
         """Propose deleting a uniformly random motif per system.
 
@@ -840,6 +879,9 @@ class ExchangeMove[State](MonteCarloMove[State, ExchangeChanges]):
         Args:
             key: JAX PRNG key.
             state: Current simulation state.
+            enabled: Optional bool scalar accepted for symmetry with
+                ``propose_insertion`` (wayfinder #61); deletion has no
+                selection-dependent asserts.
 
         Returns:
             ``(changes, log_ratio)`` where ``changes`` describes the deleted
@@ -851,11 +893,16 @@ class ExchangeMove[State](MonteCarloMove[State, ExchangeChanges]):
             self.positions(state),
             self.groups(state),
             self.capacity(state),
+            enabled=enabled,
         )
         return changes, self._zero_ratio(state)
 
     def __call__(
-        self, key: Array, state: State, /
+        self,
+        key: Array,
+        state: State,
+        /,
+        enabled: Array | None = None,
     ) -> tuple[ExchangeChanges, LogProbabilityRatio]:
         chain = key_chain(key)
         changes, log_ratio, _ = propose_mixed(
@@ -1147,14 +1194,26 @@ def make_gcmc_mcmc_propagator[State, Move: Patch[Any]](
         all four move types.
     """
 
+    def _accepts_enabled(fn: Callable[..., Any]) -> bool:
+        """Whether ``fn`` takes an ``enabled`` selection mask (wayfinder #61)."""
+        return "enabled" in inspect.signature(fn).parameters
+
     def _lift_to_exchange(
         propose_pos: ChangesFn[State, ParticlePositionChanges],
     ) -> ChangesFn[State, ExchangeChanges]:
+        forwards_enabled = _accepts_enabled(propose_pos)
+
         def wrapper(
-            key: Array, s: State, /
+            key: Array,
+            s: State,
+            /,
+            enabled: Array | None = None,
         ) -> tuple[ExchangeChanges, LogProbabilityRatio]:
             inner = state(s)
-            pos_changes, log_ratio = propose_pos(key, s)
+            if forwards_enabled:
+                pos_changes, log_ratio = propose_pos(key, s, enabled=enabled)
+            else:
+                pos_changes, log_ratio = propose_pos(key, s)
             return exchange_changes_from_position_changes(
                 pos_changes,
                 inner.particles,
@@ -1167,8 +1226,19 @@ def make_gcmc_mcmc_propagator[State, Move: Patch[Any]](
         n = state(s).particles.data.system.num_labels
         return Table.arange(jnp.zeros((n,)), label=SystemId)
 
-    def _symmetric[C](fn: Callable[[Array, State], C]) -> ChangesFn[State, C]:
-        def wrapper(key: Array, s: State, /) -> tuple[C, LogProbabilityRatio]:
+    def _symmetric[C](
+        fn: Callable[[Array, State], C],
+    ) -> ChangesFn[State, C]:
+        forwards_enabled = _accepts_enabled(fn)
+
+        def wrapper(
+            key: Array,
+            s: State,
+            /,
+            enabled: Array | None = None,
+        ) -> tuple[C, LogProbabilityRatio]:
+            if forwards_enabled:
+                return fn(key, s, enabled=enabled), _zero_ratio(s)
             return fn(key, s), _zero_ratio(s)
 
         return wrapper  # type: ignore[return-value]
@@ -1250,11 +1320,38 @@ def make_gcmc_mcmc_propagator[State, Move: Patch[Any]](
     # Exchange move (insert/delete, also symmetric)
     if exchange_weight > 0:
 
-        def _propose_exchange(key: Array, s: State) -> ExchangeChanges:
+        def _propose_exchange(
+            key: Array, s: State, /, enabled: Array | None = None
+        ) -> ExchangeChanges:
             inner = state(s)
             c = key_chain(key)
             move_key = next(c)
             w = jax.random.randint(next(c), (), 0, 2)
+            if use_mask_selection():
+                # tt port (wayfinder #61): jax.lax.cond emits stablehlo.case,
+                # which does not compile on the tt backend (#43). Compute both
+                # branches and merge with the selection one-hot; the selected
+                # branch's RNG stream is identical to the cond version (each
+                # branch derives its own chain from move_key).
+                sel = jnp.ones((), dtype=bool) if enabled is None else enabled
+                ins = insert_random_motif(
+                    move_key,
+                    inner.motifs,
+                    inner.particles,
+                    inner.groups,
+                    inner.systems.map_data(lambda d: d.cell),
+                    inner.move_capacity,
+                    enabled=sel & (w == 0),
+                )
+                dele = delete_random_motif(
+                    move_key,
+                    inner.motifs,
+                    inner.particles,
+                    inner.groups,
+                    inner.move_capacity,
+                    enabled=sel & (w == 1),
+                )
+                return tree_map(lambda *cs: select_n(w, *cs), ins, dele)
             # Only the selected move runs, so just its assertions are checked.
             return jax.lax.cond(
                 w == 0,

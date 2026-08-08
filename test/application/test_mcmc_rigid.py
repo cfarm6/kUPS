@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import tempfile
+from unittest import mock
 
 import jax
 import jax.numpy as jnp
@@ -54,6 +55,7 @@ from kups.core.potential import (
     PotentialOut,
     sum_potentials,
 )
+from kups.core.result import as_result_function
 from kups.core.typing import (
     GroupId,
     Label,
@@ -677,3 +679,46 @@ class TestRunGCMC:
     def test_analyzer_reads_back_physical_outputs(self, run_result):
         _, out_file = run_result
         _assert_readable(out_file)
+
+
+class TestMaskSelection:
+    """tt mask-based move selection (wayfinder #61) is bit-identical to switch.
+
+    The tt backend cannot compile ``jax.lax.switch``/``cond`` (``stablehlo.case``,
+    #43), so propose_mixed and _propose_exchange compute all branches and merge
+    with one-hot masks. Forcing the mask path on CPU must reproduce the switch
+    path's trajectory exactly: same key, same RNG stream on the selected branch.
+    """
+
+    @staticmethod
+    def _run_cycles(config: Config, *, mask: bool) -> MCMCState:
+        state = init_state(jax.random.key(0), config)
+        _, propagator = make_propagator(state, config.run)
+        cycle = jax.jit(as_result_function(propagator))
+        key = jax.random.key(7)
+        with (
+            mock.patch("kups.core.utils.ops.use_mask_selection", return_value=mask),
+            mock.patch("kups.core.propagator.use_mask_selection", return_value=mask),
+            mock.patch("kups.mcmc.moves.use_mask_selection", return_value=mask),
+        ):
+            for _ in range(6):
+                key, subkey = jax.random.split(key)
+                state = cycle(subkey, state).value
+        return state
+
+    def test_gcmc_mask_matches_switch(self):
+        config = _config(exchange_prob=0.5, init_adsorbates=(2,))
+        mask_state = self._run_cycles(config, mask=True)
+        switch_state = self._run_cycles(config, mask=False)
+        mask_leaves = jax.tree.leaves(mask_state)
+        switch_leaves = jax.tree.leaves(switch_state)
+        assert len(mask_leaves) == len(switch_leaves)
+        for a, b in zip(mask_leaves, switch_leaves):
+            assert jnp.array_equal(a, b), "mask and switch paths diverged"
+
+    def test_nvt_mask_matches_switch(self):
+        config = _config(exchange_prob=0.0, init_adsorbates=(2,))
+        mask_state = self._run_cycles(config, mask=True)
+        switch_state = self._run_cycles(config, mask=False)
+        for a, b in zip(jax.tree.leaves(mask_state), jax.tree.leaves(switch_state)):
+            assert jnp.array_equal(a, b), "mask and switch paths diverged"
