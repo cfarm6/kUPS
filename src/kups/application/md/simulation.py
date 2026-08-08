@@ -144,7 +144,7 @@ def inject_host_chi2_draws[State: IsMdState](
     Precompute the per-step chisquare draws (df = 3N-4 per system) on the host
     and carry them in the state — the donated cycle input — so csvr/csvr_npt
     trace only the counted step-loop while (no nested gamma whiles). Called on
-    non-CPU backends only; ``CSVRStep`` reads ``state.chi2_draws[step]`` when
+    the tt backend only; ``CSVRStep`` reads ``state.chi2_draws[step]`` when
     present and otherwise falls back to the traced draw.
     """
     counts = state.particles.data.system.counts.data
@@ -176,7 +176,7 @@ def run_md[State: IsMdState](
         Final simulation state after production run.
     """
     chain = key_chain(key)
-    if jax.default_backend() != "cpu":
+    if jax.default_backend() == "tt":
         state = inject_host_chi2_draws(state, config, key)
     # Check assertions after each step during warmup cycles
     cycle_fn = make_cycle_function(propagator)

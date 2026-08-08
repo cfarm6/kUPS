@@ -225,7 +225,7 @@ class MdState:
     step: Array
     chi2_draws: Array | None = None
     """tt port: host-precomputed per-step chisquare draws, shape
-    ``(total_steps, n_systems)``. Only set on non-CPU backends; carried in the
+    ``(total_steps, n_systems)``. Only set on the tt backend; carried in the
     state (the donated cycle input) so csvr/csvr_npt trace no chisquare
     (wayfinder #44)."""
 
