@@ -642,9 +642,9 @@ def insert_random_motif(
 
     # Find free particle slots using Buffered.select_free
     n_free_particles = (~particles.occupation).sum()
-    assert_gate = jnp.ones((), dtype=bool) if enabled is None else enabled
     runtime_assert(
-        (n_free_particles >= capacity.size) | ~assert_gate,
+        (n_free_particles >= capacity.size) if enabled is None
+        else (n_free_particles >= capacity.size) | ~enabled,
         f"Array size insufficient, requested {capacity.size} free entries while available {{available}}.",
         fmt_args={"available": n_free_particles},
     )
@@ -656,7 +656,8 @@ def insert_random_motif(
     # Find free group slots using Buffered.select_free
     n_free_groups = (~groups.occupation).sum()
     runtime_assert(
-        (n_free_groups >= n_sys) | ~assert_gate,
+        (n_free_groups >= n_sys) if enabled is None
+        else (n_free_groups >= n_sys) | ~enabled,
         f"Array size insufficient, requested {n_sys} free entries while available {{available}}.",
         fmt_args={"available": n_free_groups},
     )
