@@ -33,6 +33,7 @@ from kups.core.utils.jax import (
     isin,
     no_jax_tracing,
     skip_post_init_if_disabled,
+    tt_safe_asarray,
 )
 from kups.core.utils.subselect import subselect
 
@@ -146,7 +147,10 @@ class Index[Key: SupportsSorting]:
         else:
             typ = type(key_tuple[0]) if len(key_tuple) > 0 else None
         return Index[T](
-            key_tuple, jnp.asarray(values).reshape(np_data.shape), max_count, _cls=typ
+            key_tuple,
+            tt_safe_asarray(values).reshape(np_data.shape),
+            max_count,
+            _cls=typ,
         )
 
     @classmethod
@@ -191,7 +195,7 @@ class Index[Key: SupportsSorting]:
             n = int(ids.max()) + 1
         return Index(
             tuple(label(i) for i in range(n)),
-            jnp.asarray(ids),
+            tt_safe_asarray(ids),
             max_count,
             _cls=type(label(0)),
         )

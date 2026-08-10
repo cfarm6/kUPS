@@ -17,7 +17,7 @@ from jax import Array
 from kups.core.cell import AnyPeriodicity, Cell, TriclinicFrame, to_lower_triangular
 from kups.core.data import Index, Table
 from kups.core.typing import ExclusionId, InclusionId, Label, ParticleId, SystemId
-from kups.core.utils.jax import dataclass
+from kups.core.utils.jax import dataclass, tt_safe_asarray
 
 
 @dataclass
@@ -99,11 +99,11 @@ def _particles_from_atoms(
     L, uc_transform = to_lower_triangular(jnp.asarray(atoms.cell.array))
     pbc = (bool(atoms.pbc[0]), bool(atoms.pbc[1]), bool(atoms.pbc[2]))
     cell = Cell.from_pbc(TriclinicFrame.from_matrix(L), pbc)
-    positions = uc_transform(jnp.asarray(atoms.positions))
-    masses = jnp.asarray(atoms.get_masses())
-    atomic_numbers = jnp.asarray(atoms.get_atomic_numbers())
+    positions = uc_transform(tt_safe_asarray(atoms.positions))
+    masses = tt_safe_asarray(atoms.get_masses())
+    atomic_numbers = tt_safe_asarray(atoms.get_atomic_numbers())
     n_atoms = len(masses)
-    charges = jnp.asarray(
+    charges = tt_safe_asarray(
         atoms.info.get(
             "_atom_type_partial_charge",
             atoms.info.get("_atom_site_charge", jnp.zeros((len(positions),))),

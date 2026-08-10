@@ -41,6 +41,7 @@ import jax.core
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
+from jax.typing import ArrayLike
 
 from kups.core.utils.ops import where_broadcast_last
 
@@ -1179,3 +1180,22 @@ def sequential_vmap_with_vjp[*P, R](func: Callable[[*P], R]) -> Callable[[*P], R
 def is_traced(x: Array) -> bool:
     """Return ``True`` if ``x`` is a JAX tracer (inside a transformation)."""
     return isinstance(x, jax.core.Tracer)
+
+
+def tt_safe_asarray(x: ArrayLike) -> Array:
+    """Convert an array to a JAX array.
+
+    The tt backend crashes on an empty one-dimensional 64-bit host-to-device
+    transfer with ``RuntimeError: Buffer pointers must not be null``
+    (wayfinder #66). An empty array carries no values. A device-side zero with
+    the same shape and dtype is equivalent. The empty-array branch applies to
+    numpy arrays only. Tracers and JAX arrays use ``jnp.asarray``.
+    Non-empty arrays and other backends use ``jnp.asarray`` unchanged.
+    """
+    if (
+        jax.default_backend() == "tt"
+        and isinstance(x, np.ndarray)
+        and x.size == 0
+    ):
+        return jnp.zeros(x.shape, dtype=jnp.result_type(x))
+    return jnp.asarray(x)
