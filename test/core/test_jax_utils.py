@@ -6,6 +6,7 @@ from typing import Any
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import numpy.testing as npt
 import pytest
 
@@ -23,6 +24,7 @@ from kups.core.utils.jax import (
     tree_concat,
     tree_stack,
     tree_zeros_like,
+    tt_safe_asarray,
 )
 
 
@@ -655,3 +657,36 @@ class TestSkipIfDisabled:
         # Restored after context
         with pytest.raises(ValueError, match="non-negative"):
             Validated(x=-1)
+
+
+class TestTtSafeAsarray:
+    """Semantic contract of the empty-transfer funnel (wayfinder #66).
+
+    The tt backend crashes on an empty one-dimensional 64-bit host-to-device
+    transfer. ``tt_safe_asarray`` creates such arrays on the device instead.
+    These tests defend the equivalence: same shape, same dtype, same values.
+    """
+
+    def test_empty_numpy_keeps_shape_and_dtype(self):
+        arrays = (
+            np.zeros(0, dtype=np.int64),
+            np.zeros(0, dtype=np.float64),
+            np.zeros(0, dtype=np.int32),
+            np.zeros((0, 3), dtype=np.float64),
+        )
+        for arr in arrays:
+            out = tt_safe_asarray(arr)
+            assert out.shape == arr.shape
+            assert out.size == 0
+            # dtype must match what a non-empty transfer of the same data gives
+            ref = jnp.asarray(np.zeros(1, dtype=arr.dtype))
+            assert out.dtype == ref.dtype
+
+    def test_nonempty_numpy_passthrough(self):
+        x = np.array([1, 2, 3], dtype=np.int64)
+        npt.assert_array_equal(tt_safe_asarray(x), jnp.asarray(x))
+        assert tt_safe_asarray(x).dtype == jnp.asarray(x).dtype
+
+    def test_jax_array_passthrough(self):
+        x = jnp.zeros(0, dtype=np.int64)
+        assert tt_safe_asarray(x) is x
