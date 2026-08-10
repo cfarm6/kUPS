@@ -48,7 +48,7 @@ from kups.core.utils.jax import (
     tree_structure,
     tree_where_broadcast_last,
 )
-from kups.core.utils.ops import select_n
+from kups.core.utils.ops import select_n, use_mask_selection
 
 
 class StateProperty[State, Property](Protocol):
@@ -228,10 +228,22 @@ type LogProbabilityRatio = Table[SystemId, Array]
 
 
 class ChangesFn[State, Changes](Protocol):
-    """Protocol for functions that propose changes and a log proposal ratio."""
+    """Protocol for functions that propose changes and a log proposal ratio.
+
+    ``enabled`` is an optional bool scalar used by the tt backend
+    (wayfinder #61): when a branch is computed unconditionally (compute-all-
+    branches + one-hot merge instead of ``jax.lax.switch``), it gates the
+    branch's ``runtime_assert``s so capacity asserts on the unselected branch
+    never fire. Implementations without selection-dependent asserts accept and
+    ignore it.
+    """
 
     def __call__(
-        self, key: Array, state: State, /
+        self,
+        key: Array,
+        state: State,
+        /,
+        enabled: Array | None = None,
     ) -> tuple[Changes, LogProbabilityRatio]: ...
 
 
@@ -247,10 +259,13 @@ def propose_mixed[State, Changes](
     propose_fns: tuple[ChangesFn[State, Changes], ...],
     weights: tuple[float, ...] | None = None,
 ) -> tuple[Changes, LogProbabilityRatio, Array]:
-    """Select one proposal at random and evaluate only it.
+    """Select one proposal at random and evaluate it.
 
-    ``jax.lax.switch`` runs the chosen ``propose_fn`` and leaves the others
-    unevaluated, so only the selected move's assertions are checked.
+    On the tt backend, evaluates all proposals and merges them with one-hot
+    masks (``jax.lax.switch`` would emit ``stablehlo.case``, which does not
+    compile on tt — wayfinder #61). The selected branch's RNG stream is
+    identical to the switch version, so trajectories are bit-identical.
+
     Returns (selected_changes, selected_log_ratio, which_index).
     """
     chain = key_chain(key)
@@ -260,6 +275,22 @@ def propose_mixed[State, Changes](
     else:
         probs = jnp.array(weights) / sum(weights)
         which = jax.random.choice(next(chain), len(propose_fns), p=probs)
+    if use_mask_selection():
+        # tt port (wayfinder #61): jax.lax.switch emits stablehlo.case, which
+        # does not compile on the tt backend (#43). Compute all branches and
+        # merge with one-hot masks via select_n; the selected branch sees the
+        # same key as the switch version, so its RNG stream (and trajectory)
+        # is bit-identical. Branch functions accept an ``enabled`` selection
+        # mask so their runtime_asserts pass when the branch is unselected.
+        branches = [
+            fn(key, state, enabled=(which == i))
+            for i, fn in enumerate(propose_fns)
+        ]
+        changes = [b[0] for b in branches]
+        log_ratios = [b[1] for b in branches]
+        selected = tree_map(lambda *cs: select_n(which, *cs), *changes)
+        log_ratio = tree_map(lambda *rs: select_n(which, *rs), *log_ratios)
+        return selected, log_ratio, which
     selected, log_ratio = jax.lax.switch(which, propose_fns, key, state)
     return selected, log_ratio, which
 
