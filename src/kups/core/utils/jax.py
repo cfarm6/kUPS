@@ -900,13 +900,32 @@ def isin(a: Array, b: Array, max_item: int) -> Array:
         b = jnp.array([3, 5])
         result = isin(a, b, max_item=10)  # [False, True, True, False]
         ```
+
+    Note:
+        Inputs must be non-negative. The OOB sentinel ``max_item`` (used by
+        ``Index`` for padding) is never a member. On the tt backend the
+        scatter-based implementation is replaced: tt silently drops
+        ``.at[].set`` scatter writes for some index configurations
+        (wayfinder #72), returning all-False without an exception.
     """
+    if jax.default_backend() == "tt":
+        # tt scatter on bool tables silently no-ops for single-element index
+        # sets (stablehlo.scatter 1x1 -> all-False, verified on Blackhole,
+        # wayfinder #72); jnp.isin lowers to comparisons and is correct on
+        # tt. The bounds gate preserves the scatter path's sentinel
+        # semantics: an OOB entry in `a` (== max_item) is never a member,
+        # even when `b` holds the same value. Negative `a` returns False
+        # (the scatter path wrap-aliased -1 to the last table slot; no
+        # caller passes negatives, so False is the conservative answer).
+        return jnp.isin(a, b) & (a >= 0) & (a < max_item)
     return (
         jnp.zeros(max_item, dtype=jnp.bool_)
         .at[b]
         .set(True, mode="drop")
         .at[a]
         .get(mode="fill", fill_value=False)
+        & (a >= 0)
+        & (a < max_item)
     )
 
 
