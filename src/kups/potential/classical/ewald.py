@@ -1212,13 +1212,17 @@ def kvecs_from_kmax(cell: Cell[AnyPeriodicity], kmax: float) -> Array:
     Returns:
         Integer k-vector coefficients, shape ``(n_kvecs, 3)``.
     """
-    rvecs = cell.inverse_vectors.mT * 2 * jnp.pi
-    min_length = jnp.min(jnp.linalg.svd(rvecs)[1])
-    n = jnp.ceil(kmax / min_length).astype(int)
-    lattice = (jnp.arange(0, n + 1), jnp.arange(-n, n + 1), jnp.arange(-n, n + 1))
-    vecs = jnp.stack(jnp.meshgrid(*lattice), axis=-1).reshape(-1, 3)
+    # tt port: host-side k-vector setup. Run the SVD on the host — device
+    # backends without an svd/eigh pattern (tt-xla/tt-mlir lower square-matrix
+    # svd to eigh) cannot compile it — and return the integer table to the
+    # active backend (same convention as the QR fallback in core/cell.py).
+    rvecs = np.asarray(cell.inverse_vectors.mT) * 2 * np.pi
+    min_length = np.min(np.linalg.svd(rvecs)[1])
+    n = int(np.ceil(kmax / min_length))
+    lattice = (np.arange(0, n + 1), np.arange(-n, n + 1), np.arange(-n, n + 1))
+    vecs = np.stack(np.meshgrid(*lattice), axis=-1).reshape(-1, 3)
     kvecs = einops.einsum(vecs, rvecs, "kvecs dim1, dim1 dim2 -> kvecs dim2")
-    return vecs[jnp.linalg.norm(kvecs, axis=-1) <= kmax]
+    return jnp.asarray(vecs[np.linalg.norm(kvecs, axis=-1) <= kmax])
 
 
 if TYPE_CHECKING:
