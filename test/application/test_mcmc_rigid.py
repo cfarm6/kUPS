@@ -536,10 +536,9 @@ class TestInitStateBlockingSpheres:
         )
 
     def test_padded_edges_and_patched_positions(self):
-        """Blocking must not corrupt energy via padded (OOB) neighbor-list
-        rows, and must evaluate proposed positions: a GCMC cycle loop with a
-        blocking sphere keeps accepting moves instead of freezing (regression
-        for the frozen-chain defect)."""
+        """Blocking must not corrupt energy via padded neighbor-list rows.
+        It must also evaluate proposed positions. A GCMC cycle loop with a
+        blocking sphere keeps accepting moves instead of freezing."""
         base = _config(exchange_prob=0.5, init_adsorbates=(0,))
         blocked = base.hosts[0].model_copy(
             update={
@@ -551,6 +550,20 @@ class TestInitStateBlockingSpheres:
         )
         cfg = base.model_copy(update={"hosts": (blocked,)})
         cfg.run.num_cycles = 50
+        # All-padded edges: with zero adsorbates every particle->sphere edge
+        # row is OOB padding; the blocking energy must be exactly zero (not
+        # inf from garbage gathers).
+        state = init_state(jax.random.key(0), cfg)
+        from kups.application.potential.classical.blocking import (
+            make_blocking_spheres_from_state,
+        )
+        from kups.potential.classical.blocking import blocking_spheres_energy
+
+        pot = make_blocking_spheres_from_state(identity_lens(type(state)))
+        inp = pot.composer(state, None)[0].inp
+        energies = blocking_spheres_energy(inp).data.data
+        assert jnp.isfinite(energies).all()
+        assert energies[0] == 0.0
         run(cfg)
         out = Path(cfg.run.out_file)
         import hdf5plugin  # noqa: F401  (registers HDF5 filter plugins)
