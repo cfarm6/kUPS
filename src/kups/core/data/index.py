@@ -547,7 +547,7 @@ class Index[Key: SupportsSorting]:
         )
 
     def max_over(self, array: Array) -> Table[Key, Array]:
-        """Takes max of ``array`` values grouped by this index via segment max.
+        """Takes max of ``array`` values grouped by this index via a masked max.
 
         Args:
             array: Array with leading dimension matching ``self.indices``.
@@ -557,11 +557,29 @@ class Index[Key: SupportsSorting]:
         """
         from kups.core.data.table import Table
 
-        return Table(
-            self.keys,
-            jax.ops.segment_max(array, self.indices, self.num_labels, mode="drop"),
-            _cls=self._cls,
+        # Masked reduce_max instead of jax.ops.segment_max: segment ops lower
+        # to stablehlo scatter with reduction amax, which the tt runtime
+        # rejects (ttnn::scatter supports only add/multiply; row #57 fix
+        # 5da3c22, wayfinder #97). Result keeps ``num_labels`` rows with the
+        # dtype's identity as the empty-segment value, matching
+        # ``segment_max(..., mode='drop')`` (which drops out-of-range updates,
+        # not empty output rows). No boolean indexing (breaks under jit).
+        ids = self.indices
+        n = self.num_labels
+        if jnp.issubdtype(array.dtype, jnp.floating):
+            filler = jnp.finfo(array.dtype).min
+        elif jnp.issubdtype(array.dtype, jnp.integer):
+            filler = jnp.iinfo(array.dtype).min
+        elif array.dtype == jnp.bool_:
+            filler = False
+        else:
+            raise TypeError(f"max_over: unsupported dtype {array.dtype}")
+        # (n, m) mask broadcast over trailing dims of ``array`` (m, ...).
+        mask = (ids[None, :] == jnp.arange(n)[:, None]).reshape(
+            (n, ids.shape[0]) + (1,) * (array.ndim - 1)
         )
+        seg_max = jnp.max(jnp.where(mask, array[None, :], filler), axis=1)
+        return Table(self.keys, seg_max, _cls=self._cls)
 
     @staticmethod
     def find[L: SupportsSorting](obj: PyTree, cls: type[L]) -> Index[L]:

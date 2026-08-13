@@ -25,6 +25,7 @@ from kups.application.relaxation.data import (
 from kups.application.relaxation.simulation import make_relax_propagator
 from kups.application.simulations.potentials import LjPotentialConfig
 from kups.application.simulations.relax import Config, run
+from kups.core.cell import DeformedFrame, MatrixLogFrame, TriclinicFrame
 from kups.core.lens import identity_lens
 from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.observables.stress import stress_via_virial_theorem, total_lattice_gradient
@@ -132,7 +133,20 @@ def _build_propagator(optimize_cell: bool):
     propagator, opt_init = make_relax_propagator(
         state_lens, potential, optimizer, gradient
     )
-    particles, systems = relax_state_from_ase(config.inp_files[0])
+    particles, systems = relax_state_from_ase(
+        config.inp_files[0], optimize_cell=optimize_cell
+    )
+    if optimize_cell:
+        assert isinstance(
+            systems.data.cell.frame.deformation, MatrixLogFrame
+        ), "cell relaxation must use the full 3x3 MatrixLogFrame deformation"
+    else:
+        assert not isinstance(
+            systems.data.cell.frame, DeformedFrame
+        ), "positions-only relaxation must keep the plain cell frame (no deformation machinery)"
+        assert isinstance(
+            systems.data.cell.frame, TriclinicFrame
+        ), "positions-only cell frame must be the plain TriclinicFrame"
     nlp = UniversalNeighborlistParameters.estimate(
         particles.data.system.counts, systems, lj.cutoff
     )
