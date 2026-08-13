@@ -79,7 +79,9 @@ def run(config: Config) -> None:
     all_systems: list[Table[SystemId, RelaxSystems]] = []
     for inp_file in config.inp_files:
         logging.info(f"Loading structure from {inp_file}")
-        particles_i, systems_i = relax_state_from_ase(inp_file)
+        particles_i, systems_i = relax_state_from_ase(
+            inp_file, optimize_cell=config.run.optimize_cell
+        )
         all_particles.append(particles_i)
         all_systems.append(systems_i)
     particles, systems = Table.union(all_particles, all_systems)

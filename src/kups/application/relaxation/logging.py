@@ -58,10 +58,20 @@ class RelaxStepData:
         """Extract per-step logging data from a relaxation state."""
         forces = state.particles.data.forces
         force_norms = jnp.linalg.norm(forces, axis=-1)
-        max_force = jax.ops.segment_max(
-            force_norms,
-            state.particles.data.system.indices,
-            state.particles.data.system.num_labels,
+        # Masked reduce_max over the system axis instead of
+        # jax.ops.segment_max: segment ops lower to stablehlo scatter with
+        # reduction amax, which the tt runtime rejects (ttnn::scatter supports
+        # only add/multiply). Backend-neutral, CPU-identical (row #57 fix
+        # 5da3c22, wayfinder #97).
+        seg_ids = state.particles.data.system.indices
+        n_sys = state.particles.data.system.num_labels
+        max_force = jnp.max(
+            jnp.where(
+                seg_ids[None, :] == jnp.arange(n_sys)[:, None],
+                force_norms[None, :],
+                0.0,
+            ),
+            axis=1,
         )
         return RelaxStepData(
             atoms=state.particles,

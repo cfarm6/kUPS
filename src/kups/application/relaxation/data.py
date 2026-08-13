@@ -104,12 +104,22 @@ class RelaxRunConfig(BaseModel):
 
 def relax_state_from_ase(
     atoms: ase.Atoms | str | Path,
+    *,
+    optimize_cell: bool = True,
 ) -> tuple[Table[ParticleId, RelaxParticles], Table[SystemId, RelaxSystems]]:
     """Build relaxation particle and system data from an ASE Atoms object or file.
 
     Args:
         atoms: ASE Atoms object, or a file path (str/Path) readable by
             ``ase.io.read``.
+        optimize_cell: Select the cell representation by intent: ``True``
+            (default, historic behavior) wraps the cell in a ``DeformedFrame``
+            with the full 3x3 ``MatrixLogFrame`` deformation (general eig-based
+            ``logm``); ``False`` (positions-only) keeps the plain
+            ``TriclinicFrame`` cell from ``particles_from_ase`` — no deformation
+            machinery, whose general eig/lstsq paths have no tt lowering
+            (wayfinder blockers #96/#97). ``relax.run`` passes
+            ``config.run.optimize_cell``.
 
     Returns:
         Tuple of ``(particles, systems)`` ready for relaxation propagators.
@@ -133,11 +143,20 @@ def relax_state_from_ase(
     cell_factor = jnp.bincount(p.data.system.indices, length=n_systems).astype(
         p.data.positions.dtype
     )
-    cell = bind(cell[None], lambda x: x.frame).apply(
-        lambda f: DeformedFrame.from_frame(
-            f, cell_factor=cell_factor, deformation=MatrixLogFrame
+    if optimize_cell:
+        cell = bind(cell[None], lambda x: x.frame).apply(
+            lambda f: DeformedFrame.from_frame(
+                f, cell_factor=cell_factor, deformation=MatrixLogFrame
+            )
         )
-    )
+    else:
+        # Positions-only: keep the plain TriclinicFrame cell (LinearFrame).
+        # Building a DeformedFrame here would route every run through the
+        # general eig/lstsq paths (wayfinder blockers #96/#97: no tt lowering
+        # for eig / svd / eigh), and the deformation DOFs are unused under
+        # POSITIONS_ONLY anyway. cell_factor is only needed for the
+        # deformation-frame path above.
+        cell = cell[None]
     systems = Table.arange(
         RelaxSystems(
             cell=cell,

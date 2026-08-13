@@ -1,0 +1,28 @@
+# wayfinder #59 — GEO relaxation LJ 3D periodic row, ASE L-BFGS optimizer.
+# ScaleByAseLbfgs is a preconditioner (emits descent direction H^-1 grad);
+# chain is lbfgs + max_step_size (test-chain trailing scale(-1) makes the
+# run ascend — energy descent verified empirically before committing).
+inp_files:
+  - ../host/argon_fcc.cif
+
+run:
+  out_file: ../../geo_relax_lbfgs_lj_argon_ref.h5
+  max_steps: 1000
+  seed: 42
+  force_tolerance: 0.01
+  optimizer:
+    - transform: scale_by_ase_lbfgs
+      memory_size: 10
+      alpha: 70
+    - transform: max_step_size
+      max_step_size: 0.2
+    - transform: scale
+      step_size: -1
+  optimize_cell: false
+
+potential:
+  backend: lj
+  cutoff: 10.0
+  mixing_rule: lorentz_berthelot
+  parameters:
+    Ar: [3.405, 0.01032356174398622]
