@@ -21,6 +21,9 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 from jax import Array
 from pydantic import BaseModel, Field
 
+import jax
+import jax.numpy as jnp
+
 from kups.application.potential.classical.lennard_jones import (
     IsLJGraphState,
     make_lennard_jones_from_state,
@@ -74,6 +77,19 @@ class LjPotentialConfig(BaseModel):
             parameters=self.parameters,
             mixing_rule=self.mixing_rule,
         )
+        if jax.default_backend() == "tt":
+            # tt port (wayfinder #85): keep the parameter tables f32 at the
+            # device boundary — f64 tables are materialized as bf16 on the tt
+            # device, biasing the LJ PE +0.33% (see #73); the flat single-index
+            # lookup in lennard_jones_edge_energy then routes through the
+            # f32-preserving ttir.gather path (#75). Host-side init data,
+            # tt-gated only.
+            params = LennardJonesParameters(
+                params.labels,
+                params.sigma.astype(jnp.float32),
+                params.epsilon.astype(jnp.float32),
+                params.cutoff.map_data(lambda c: c.astype(jnp.float32)),
+            )
         potential = make_lennard_jones_from_state(
             state_lens, parameters=params, gradient=gradient
         )

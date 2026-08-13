@@ -26,6 +26,7 @@ from typing import (
     runtime_checkable,
 )
 
+import jax
 import jax.numpy as jnp
 from jax import Array
 
@@ -153,8 +154,19 @@ def lennard_jones_edge_energy(inp: LennardJonesInput) -> Array:
     edg_species = graph.particles[graph.edges.indices].labels.indices_in(
         inp.parameters.labels
     )
-    epsilon = epsilon[edg_species[:, 0], edg_species[:, 1]]
-    sigma = sigma[edg_species[:, 0], edg_species[:, 1]]
+    if jax.default_backend() == "tt":
+        # tt port (wayfinder #85): the 2-D advanced-index gather lowers through
+        # ttir.embedding, which casts the operand to bf16 (8-bit mantissa) and
+        # biases the PE +0.33% (#73). Flatten to a single-index gather so the
+        # lowering routes to the f32-preserving ttir.gather path (#75) — the
+        # parameter tables are already f32 on tt (LjPotentialConfig.build).
+        n_species = inp.parameters.sigma.shape[0]
+        flat_idx = edg_species[:, 0] * n_species + edg_species[:, 1]
+        epsilon = inp.parameters.epsilon.reshape(-1)[flat_idx]
+        sigma = inp.parameters.sigma.reshape(-1)[flat_idx]
+    else:
+        epsilon = inp.parameters.epsilon[edg_species[:, 0], edg_species[:, 1]]
+        sigma = inp.parameters.sigma[edg_species[:, 0], edg_species[:, 1]]
     r2 = jnp.sum(graph.edge_shifts[:, 0] ** 2, axis=-1)
     c6 = (sigma**2 / r2) ** 3
     edge_energy = 4 * epsilon * (c6**2 - c6)

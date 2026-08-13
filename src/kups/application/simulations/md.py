@@ -33,7 +33,7 @@ from kups.application.md.data import (
     MDSystems,
     md_state_from_ase,
 )
-from kups.application.md.simulation import make_md_propagator, run_md
+from kups.application.md.simulation import IsMdState, make_md_propagator, run_md
 from kups.application.potential.filter import POSITIONS_AND_CELL
 from kups.application.simulations.potentials import (
     MaceConfig,
@@ -96,7 +96,26 @@ def run(config: Config) -> None:
         neighborlist_params=neighborlist_params,
         step=jnp.array([0]),
     )
+    if jax.default_backend() == "tt":
+        state = _f32_geometry(state)
     run_md(next(chain), propagator, state, config.run)
+
+
+def _f32_geometry[State: IsMdState](state: State) -> State:
+    """tt port: f32-normalize geometry at the device boundary (wayfinder #85).
+
+    The tt device materializes f64 device tensors as bf16 (8-bit mantissa),
+    which rounds the cell (21.04 -> 21.0, -0.57% density) and positions
+    (0.125 A ulp at 21 A) and shifts the LJ NVE PE mean ~+1.4% — out of the
+    kUPS-CI 10-sigma band. Casting the geometry (and all f64 state floats) to
+    f32 at the boundary keeps the device arithmetic f32 (24-bit), matching the
+    CPU reference within the band. Host-side, @no_jax_tracing init data
+    (two-pattern rule); CPU/other backends keep f64 untouched.
+    """
+    return jax.tree.map(
+        lambda x: x.astype(jnp.float32) if getattr(x, "dtype", None) == jnp.float64 else x,
+        state,
+    )
 
 
 def main() -> None:
