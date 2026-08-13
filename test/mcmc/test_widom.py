@@ -120,6 +120,20 @@ class TestWidomTest:
 
 
 class TestWidomStatistics:
+    def test_hard_wall_rejection_does_not_poison_delta_u_sum(self):
+        # Blocking-sphere insertions give ln_alpha = -inf: boltzmann = 0 and
+        # delta_u = +inf. 0*inf must contribute 0 to sum_delta_u_boltzmann,
+        # not NaN (regression for the tt-row-58 widom+blocking combo).
+        stats = WidomStatistics.zeros(2)
+        stats = stats.update(
+            jnp.array([-jnp.inf, 0.5]), jnp.array([jnp.inf, 2.0])
+        )
+        npt.assert_array_equal(stats.sum_boltzmann, jnp.array([0.0, jnp.exp(0.5)]))
+        npt.assert_allclose(
+            stats.sum_delta_u_boltzmann, jnp.array([0.0, 2.0 * jnp.exp(0.5)])
+        )
+        npt.assert_array_equal(stats.n_samples, jnp.array([1, 1], dtype=jnp.int32))
+
     def test_reset_clears_sums(self):
         stats = WidomStatistics.zeros(2)
         for _ in range(7):

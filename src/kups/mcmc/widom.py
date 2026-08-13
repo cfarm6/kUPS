@@ -124,9 +124,13 @@ class WidomStatistics:
                 $\Delta U = -k_BT \ln\alpha$ exactly.
         """
         boltzmann = jnp.exp(ln_alpha)
+        # Hard-wall rejections (blocking spheres) give ln_alpha = -inf, so
+        # boltzmann = 0 and delta_u = +inf: 0*inf would poison the running
+        # sum with NaN. A zero-weight insertion contributes 0 to <dU*W>.
+        weighted_delta_u = jnp.where(boltzmann > 0, delta_u * boltzmann, 0.0)
         return WidomStatistics(
             sum_boltzmann=self.sum_boltzmann + boltzmann,
-            sum_delta_u_boltzmann=self.sum_delta_u_boltzmann + delta_u * boltzmann,
+            sum_delta_u_boltzmann=self.sum_delta_u_boltzmann + weighted_delta_u,
             n_samples=self.n_samples + 1,
         )
 
