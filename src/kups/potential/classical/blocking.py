@@ -24,7 +24,6 @@ from typing import (
 
 import numpy as np
 
-import jax
 import jax.numpy as jnp
 from jax import Array
 
@@ -271,8 +270,20 @@ class BlockingSpheresSumComposer[State, Ptch: Patch[Any]](
         neighborlist_factory = self.neighborlist_view(state)
 
         # Build cutoffs: remap sphere system indices into systems index space
+        # and take the per-system max radius. A masked reduce_max is used
+        # instead of jax.ops.segment_max: segment ops lower to stablehlo
+        # scatter with reduction amax, which the tt runtime rejects
+        # (ttnn::scatter supports only add/multiply).
+        n_sys = len(systems.keys)
         seg_ids = parameters.system.indices_in(tuple(systems.keys))
-        max_radii = jax.ops.segment_max(parameters.radii, seg_ids, len(systems.keys))
+        max_radii = jnp.max(
+            jnp.where(
+                seg_ids[None, :] == jnp.arange(n_sys)[:, None],
+                parameters.radii[None, :],
+                0.0,
+            ),
+            axis=1,
+        )
         cutoffs = Table(systems.keys, max_radii)
 
         # NNList particles
