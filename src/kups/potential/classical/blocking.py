@@ -22,6 +22,8 @@ from typing import (
     Sequence,
 )
 
+import numpy as np
+
 import jax
 import jax.numpy as jnp
 from jax import Array
@@ -50,7 +52,7 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
-from kups.core.utils.jax import dataclass, field
+from kups.core.utils.jax import dataclass, field, tt_safe_asarray
 from kups.potential.common.energy import (
     EnergyFunction,
     PotentialFromEnergy,
@@ -120,8 +122,8 @@ class BlockingSpheresParameters:
                     positions_list.append(sphere.center)
                     system_list.append(SystemId(sys_idx))
                     motif_list.append(MotifId(motif_idx))
-        radii = jnp.array(radii_list)
-        positions = jnp.array(positions_list).reshape(-1, 3)
+        radii = tt_safe_asarray(np.asarray(radii_list))
+        positions = tt_safe_asarray(np.asarray(positions_list)).reshape(-1, 3)
         system = Index.new(system_list, label=SystemId).populate_max_count()
         motif = Index.new(motif_list, label=MotifId).populate_max_count()
         return BlockingSpheresParameters(radii, positions, system, motif)
