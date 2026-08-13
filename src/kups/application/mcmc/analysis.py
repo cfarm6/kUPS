@@ -9,6 +9,8 @@ from dataclasses import dataclass as plain_dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+import numpy as np
+
 import jax.numpy as jnp
 from jax import Array
 
@@ -83,6 +85,30 @@ class MCMCAnalysisResult:
     pressure_ideal_gas: BlockAverageResult | None = None
 
 
+def _inv_with_singular_nan(cov: Array) -> np.ndarray:
+    """Batched matrix inverse matching jnp semantics on singular blocks.
+
+    tt port: host-side inverse. tt-xla/tt-mlir have no ``jnp.linalg.inv``
+    pattern (the tt-xla frontend fails converting the lowering's reduces,
+    module_builder.cc:839). Block means are concrete host arrays under
+    ``@no_jax_tracing``, so run numpy — same convention as the SVD fallback
+    in ``potential/classical/ewald.py``.
+
+    ``jnp.linalg.inv`` (XLA LU) inverts a batch per block: a singular block
+    (e.g. constant per-species counts in NVT rigid, giving a zero count
+    covariance) yields nan/inf there without raising, while valid blocks stay
+    inverted. numpy (LAPACK) raises ``LinAlgError`` for the whole batch, so
+    invert per block and map singular blocks to nan.
+    """
+    cov_inv = np.empty_like(cov)
+    for i in range(cov.shape[0]):
+        try:
+            cov_inv[i] = np.linalg.inv(cov[i])
+        except np.linalg.LinAlgError:
+            cov_inv[i] = np.nan
+    return cov_inv
+
+
 @no_jax_tracing
 def _analyze_single_system(
     energy: Array,
@@ -120,7 +146,7 @@ def _analyze_single_system(
     NN_blocks = compute_block_means(counts[..., None] * counts[:, None], n_blocks)
 
     cov = NN_blocks - N_blocks[..., None] * N_blocks[:, None, :]
-    cov_inv = jnp.linalg.inv(cov)
+    cov_inv = _inv_with_singular_nan(cov)
     diff = UN_blocks - U_blocks[:, None] * N_blocks
     hoa_blocks = jnp.einsum("bi,bij->bj", diff, cov_inv)
     hoa_blocks -= temperature * BOLTZMANN_CONSTANT

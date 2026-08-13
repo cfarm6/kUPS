@@ -9,6 +9,7 @@ from typing import Any
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import numpy.testing as npt
 import pytest
 from jax import Array
@@ -16,6 +17,7 @@ from jax import Array
 from kups.application.mcmc.analysis import (
     _analyze_single_system,
     _analyze_single_widom_system,
+    _inv_with_singular_nan,
     analyze_mcmc,
     analyze_mcmc_file,
 )
@@ -81,6 +83,42 @@ class TestAnalyzeSingleSystem:
 
         assert float(result.loading.mean[0]) == pytest.approx(3.0)
         assert float(result.loading.mean[1]) == pytest.approx(7.0)
+
+    def test_constant_counts_heat_of_adsorption_is_nan(self):
+        """Singular count covariance yields NaN heat of adsorption.
+
+        Constant per-species counts make the count covariance exactly zero.
+        jnp.linalg.inv returns NaN/Inf there without raising; the tt-port
+        host-side fallback must match (LAPACK would raise LinAlgError), and
+        the CPU NVT reference expects NaN.
+        """
+        n_steps = 200
+        energy = jnp.linspace(-1.0, -0.9, n_steps)
+        counts = jnp.tile(jnp.array([3.0, 5.0]), (n_steps, 1))
+
+        result = _analyze_single_system(energy, counts, temperature=300.0, n_blocks=10)
+
+        assert np.all(np.isnan(np.asarray(result.heat_of_adsorption.mean)))
+        assert np.all(np.isnan(np.asarray(result.heat_of_adsorption.sem)))
+
+    def test_inv_with_singular_nan_inverts_valid_blocks(self):
+        """Mixed-batch inverse: singular blocks become NaN, valid stay inverted.
+
+        jnp.linalg.inv inverts a batch per block, so one singular block must
+        not discard the valid blocks' inverses (as a whole-batch LAPACK
+        LinAlgError would).
+        """
+        cov = np.array(
+            [
+                [[2.0, 0.0], [0.0, 4.0]],  # valid
+                [[1.0, 0.0], [0.0, 0.0]],  # singular
+                [[0.0, 0.0], [0.0, 0.0]],  # singular (zero)
+            ]
+        )
+        result = _inv_with_singular_nan(cov)
+        npt.assert_allclose(result[0], np.linalg.inv(cov[0]), rtol=1e-12)
+        assert np.all(np.isnan(result[1]))
+        assert np.all(np.isnan(result[2]))
 
 
 class TestAnalyzeMCMC:
