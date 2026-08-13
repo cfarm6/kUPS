@@ -192,8 +192,18 @@ def blocking_spheres_energy(
     Returns:
         Energy and patch with infinite energy for blocked particles.
     """
-    particle_motif_idx = inp.edges.indices[:, 0]
-    sph_idx = inp.edges.indices[:, 1].indices
+    edge_idx = inp.edges.indices
+    raw_idx = edge_idx.indices
+    n_sph = inp.parameters.radii.shape[0]
+    # Padded (OOB) edge rows must not contribute: ReduceCompactor fills
+    # failing rows with ``oob = max(keys.size, query_table.size)``, which
+    # collides with a real sphere key on the query side (oob == len(particles)
+    # == ExclusionId(0)), so validity is checked per side: particle side via
+    # Index.valid_mask (indices < len(keys)), sphere side positionally.
+    sph_idx = raw_idx[:, 1]
+    valid = edge_idx.valid_mask[:, 0] & (sph_idx < n_sph)
+    particle_motif_idx = edge_idx[:, 0]
+    sph_idx = jnp.clip(sph_idx, 0, n_sph - 1)
     particles = inp.particles[particle_motif_idx]
     particle_sys = particles.system
     diffs = particles.positions - inp.parameters.positions[sph_idx]
@@ -208,7 +218,7 @@ def blocking_spheres_energy(
         inp.groups[particles.group].motif, sph_motif
     )
     raw_energies = jnp.where(
-        (dists < radii) & (group_motif_idx == sph_motif_idx), jnp.inf, 0.0
+        (dists < radii) & (group_motif_idx == sph_motif_idx) & valid, jnp.inf, 0.0
     )
     energies = particle_sys.sum_over(raw_energies)
     return WithPatch(energies, IdPatch[Any]())
@@ -244,21 +254,21 @@ class BlockingSpheresSumComposer[State, Ptch: Patch[Any]](
 
     def __call__(
         self, state: State, patch: Ptch | None
-    ) -> Sum[BlockingSpheresPotentialInput]:  # type: ignore[reportReturnType]
+    ) -> Sum[BlockingSpheresPotentialInput]:
+        # Full recompute: apply the move patch (if any) so the proposed
+        # positions are what the neighbor list and energy see. Without this,
+        # proposals that move a particle into a sphere are accepted (the
+        # blocking energy is evaluated on stale positions), and the chain
+        # freezes at the first state that is genuinely blocked.
+        if patch is not None:
+            n_sys = len(self.systems_view(state))
+            state = patch(
+                state, self.systems_view(state).set_data(jnp.ones((n_sys,), dtype=jnp.bool_))
+            )
         particles = self.particles_view(state)
         systems = self.systems_view(state)
         parameters = self.parameters_view(state)
         neighborlist_factory = self.neighborlist_view(state)
-        probe_neighborlist = None
-
-        if patch is not None and self.probe is not None:
-            n_sys = particles.data.system.num_labels
-            patched_state = patch(
-                state, systems.set_data(jnp.ones((n_sys,), dtype=jnp.bool_))
-            )
-            probe_result = self.probe(state, patch)
-            probe_neighborlist = probe_result.neighborlist
-            particles = self.particles_view(patched_state)
 
         # Build cutoffs: remap sphere system indices into systems index space
         seg_ids = parameters.system.indices_in(tuple(systems.keys))
@@ -291,7 +301,7 @@ class BlockingSpheresSumComposer[State, Ptch: Patch[Any]](
             label=ParticleId,
         )
 
-        neighborlist = probe_neighborlist or neighborlist_factory(cutoffs)
+        neighborlist = neighborlist_factory(cutoffs)
         edges = neighborlist(nnlist_particles, systems, queries=spheres)
         cell = systems.map_data(lambda s: s.cell)
         groups = self.groups_view(state)

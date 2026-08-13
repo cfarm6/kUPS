@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import tempfile
+from pathlib import Path
 from unittest import mock
 
 import jax
@@ -533,6 +534,44 @@ class TestInitStateBlockingSpheres:
         assert state.blocking_spheres_neighborlist_params == (
             UniversalNeighborlistParameters(0, 0, 0, 0)
         )
+
+    def test_padded_edges_and_patched_positions(self):
+        """Blocking must not corrupt energy via padded (OOB) neighbor-list
+        rows, and must evaluate proposed positions: a GCMC cycle loop with a
+        blocking sphere keeps accepting moves instead of freezing (regression
+        for the frozen-chain defect)."""
+        base = _config(exchange_prob=0.5, init_adsorbates=(0,))
+        blocked = base.hosts[0].model_copy(
+            update={
+                "pressure": 1_000_000,
+                "blocking_spheres": (
+                    (BlockingSphereConfig(center=(0.0, 0.0, 0.0), radius=2.0),),
+                ),
+            }
+        )
+        cfg = base.model_copy(update={"hosts": (blocked,)})
+        cfg.run.num_cycles = 50
+        run(cfg)
+        out = Path(cfg.run.out_file)
+        import hdf5plugin  # noqa: F401  (registers HDF5 filter plugins)
+
+        import h5py
+
+        with h5py.File(out) as f:
+            g = f["group.per_step"]
+            for key in (
+                "translation_acceptance",
+                "exchange_acceptance",
+                "reinsertion_acceptance",
+            ):
+                acc = g[f"array.systems.data.{key}"][:, 0]
+                assert acc.sum() > 0, f"{key} never accepted a move"
+            pe = g["array.systems.data.potential_energy"][:, 0]
+        assert jnp.isfinite(pe).all()
+        # At least one adsorbate must be present, so blocking proposals
+        # (translation/reinsertion against the sphere) are actually exercised.
+        result = next(iter(analyze_mcmc_file(out, n_blocks=2).values()))
+        assert result.loading.mean > 0
 
 
 class TestExchangeEnergyConsistency:

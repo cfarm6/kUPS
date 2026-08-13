@@ -1,0 +1,32 @@
+adsorbates:
+  - critical_temperature: 150.8
+    critical_pressure: 4_870_000
+    acentric_factor: 0.0
+    positions:
+      - [0, 0, 0]
+    symbols: [Ar]
+
+hosts:
+  - cif_file: ../host/empty_30.cif
+    pressure: 2000000
+    temperature: 120.0
+    init_adsorbates: [0]
+    blocking_spheres:
+      - - center: [15.0, 15.0, 15.0]
+          radius: 8.0
+
+run:
+  out_file: ../../mc_blocking_lj_argon_ref.h5
+  num_warmup_cycles: 10_000
+  num_cycles: 20_000
+  min_cycle_length: 20
+  seed: 42
+  exchange_prob: 0.5
+
+lj: !import [../lennard_jones/trappe.yaml]
+
+ewald:
+  real_cutoff: 12.0
+  precision: 1.e-6
+
+max_num_adsorbates: 50
