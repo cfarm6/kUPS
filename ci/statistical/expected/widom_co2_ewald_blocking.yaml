@@ -1,0 +1,12 @@
+simulation_type: widom
+hdf5_output: widom_co2_ewald_blocking.h5
+observables:
+  excess_chemical_potential:
+    expected_mean: 0.002634000730576424
+    expected_sem: 6.9281138730832214e-06
+  henry_coefficient:
+    expected_mean: 948489.1461363019
+    expected_sem: 255.76424271314298
+  heat_of_adsorption:
+    expected_mean: 0.025698553501193804
+    expected_sem: 3.4110820844110758e-09
