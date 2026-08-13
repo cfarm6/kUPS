@@ -1,0 +1,32 @@
+adsorbates:
+  - critical_temperature: 150.687
+    critical_pressure: 4_898_000
+    acentric_factor: -0.002
+    positions:
+      - [0, 0, 0]
+    symbols: [Ar]
+    charges: [0.0]
+
+hosts:
+  - cif_file: ../host/argon4_vac.xyz
+    pressure: 100_000
+    temperature: 100.0
+    init_adsorbates: [4]
+
+run:
+  out_file: ../../mc_lj_argon_vac_probe.h5
+  num_warmup_cycles: 100
+  num_cycles: 200
+  min_cycle_length: 1
+  seed: 42
+
+lj:
+  cutoff: 10.0
+  parameters:
+    Ar: [3.405, 0.01032356174398622]
+  tail_correction: false
+  mixing_rule: lorentz_berthelot
+
+ewald:
+  real_cutoff: 10.0
+  precision: 1.e-6
