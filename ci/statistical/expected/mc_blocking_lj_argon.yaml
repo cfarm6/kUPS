@@ -1,0 +1,15 @@
+simulation_type: gcmc
+hdf5_output: mc_blocking_lj_argon.h5
+observables:
+  energy:
+    expected_mean: -0.03483255468748901
+    expected_sem: 0.00043312814913738936
+  loading:
+    expected_mean: 18.41805
+    expected_sem: 0.090398817746694
+  heat_of_adsorption:
+    expected_mean: -0.014114188472177144
+    expected_sem: 2.7341258564613776e-05
+  total_heat_of_adsorption:
+    expected_mean: -0.014114188472177144
+    expected_sem: 2.7341258564613776e-05
