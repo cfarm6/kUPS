@@ -147,6 +147,7 @@ class Config(BaseModel):
     lj: LJConfig
     ewald: EwaldConfig
     compute_stress: bool = False
+    max_num_adsorbates: int | None = None
 
 
 @dataclass
@@ -405,6 +406,13 @@ def init_state(key: Array, config: Config) -> MCMCState:
         f"{len(groups)} molecules, across {len(system)} systems."
     )
     max_adsorbates = estimate_max_adsorbates(particles, motifs, system)
+    if config.max_num_adsorbates is not None and jax.default_backend() == "tt":
+        # tt port: the activity-based estimate can exceed the config cap ~10x
+        # and OOMs the static tt insertion buffer (wayfinder #71); cap it like
+        # the widom CLI does. CPU keeps the estimate to preserve reference runs.
+        max_adsorbates = max_adsorbates.map_data(
+            lambda v: jnp.minimum(v, config.max_num_adsorbates)
+        )
     n_sys = len(system)
     lj_params = GlobalTailCorrectedLennardJonesParameters.from_dict(
         cutoff=config.lj.cutoff,
