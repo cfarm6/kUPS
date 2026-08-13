@@ -1313,19 +1313,15 @@ def to_lower_triangular(vecs: Array) -> tuple[Array, TriclinicMap]:
     Returns:
         Tuple of (lower_triangular_vectors, coordinate_rotation_fn).
     """
-    vecs = jnp.asarray(vecs)
+    vecs = np.asarray(vecs)
     # tt port: host-side cell setup. Run the QR on CPU — device backends
     # without a Qr custom-call pattern (tt-xla/tt-mlir) cannot compile it —
     # and transfer the result back to the active backend.
-    if jax.default_backend() != "cpu":
-        vecs = jax.device_put(vecs, jax.devices("cpu")[0])
-    Q, R = jnp.linalg.qr(vecs.T)
-    signs = jnp.sign(jnp.diagonal(R))
-    signs = jnp.where(signs == 0, 1.0, signs)
+    Q, R = np.linalg.qr(vecs.T)
+    signs = np.sign(np.diagonal(R))
+    signs = np.where(signs == 0, 1.0, signs)
     R = R * signs[:, None]
     Q = Q * signs[None, :]
-    L = R.T
-    if jax.default_backend() != "cpu":
-        L = jax.device_put(L)
-        Q = jax.device_put(Q)
+    L = jnp.asarray(R.T)
+    Q = jnp.asarray(Q)
     return L, partial(jnp.einsum, "...ij,...i->...j", Q)

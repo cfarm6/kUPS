@@ -383,11 +383,11 @@ def mcmc_state_from_config(
     motif_ids = [Table((MotifId(0),), jnp.zeros(1)) for _ in ads_particles]
     motifs, _ = Table.union(ads_particles, motif_ids)
 
-    # Compute log activity via Peng-Robinson EOS
+    # Compute log activity via Peng-Robinson EOS.
     crit_temps = jnp.asarray([a.critical_temperature for a in adsorbates])
     crit_press = jnp.asarray([a.critical_pressure for a in adsorbates])
     acentric = jnp.asarray([a.acentric_factor for a in adsorbates])
-    result = peng_robinson_log_fugacity(
+    fugacity_args = (
         jnp.asarray(float(host.pressure)) * PASCAL,
         jnp.asarray(float(host.temperature)) * KELVIN,
         crit_press * PASCAL,
@@ -396,6 +396,13 @@ def mcmc_state_from_config(
         jnp.asarray(host.adsorbate_composition),
         jnp.asarray(host.adsorbate_interaction),
     )
+    is_tt = jax.default_backend() == "tt"
+    if is_tt:
+        cpu = jax.devices("cpu")[0]
+        fugacity_args = tuple(jax.device_put(arg, cpu) for arg in fugacity_args)
+    log_fugacity = peng_robinson_log_fugacity(*fugacity_args).log_fugacity
+    if is_tt:
+        log_fugacity = jax.device_put(log_fugacity)
 
     # Host
     system = Table.arange(
@@ -403,7 +410,7 @@ def mcmc_state_from_config(
             cell=cell[None],
             temperature=jnp.array([host.temperature]),
             potential_energy=jnp.zeros(1),
-            log_fugacity=result.log_fugacity[None],
+            log_fugacity=log_fugacity[None],
         ),
         label=SystemId,
     )
@@ -512,7 +519,8 @@ def estimate_occupied_volume[T: HasAtomicNumbers, K: SupportsSorting](
     Returns:
         Table mapping each group key to its occupied volume (Ang^3).
     """
-    radii = jnp.asarray(ase.data.vdw_radii)[particles.data.atomic_numbers]
+    # The tt backend turns NaN into float32 max on transfer; sanitize on the host.
+    radii = jnp.asarray(np.nan_to_num(ase.data.vdw_radii))[particles.data.atomic_numbers]
     scaled_radii = radii * radius_scale
     volumes = jnp.nan_to_num(4.0 / 3.0 * jnp.pi * scaled_radii**3)
     return group_index(particles.data).sum_over(volumes)

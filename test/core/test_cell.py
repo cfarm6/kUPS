@@ -509,8 +509,10 @@ class TestToLowerTriangular:
             jnp.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]]),
             # Random rotations of a positive-diagonal lower-triangular cell.
             *[
-                jnp.array([[2.0, 0.0, 0.0], [0.5, 3.0, 0.0], [0.1, 0.2, 4.0]])
-                @ jnp.linalg.qr(jax.random.normal(jax.random.key(seed), (3, 3)))[0]
+                jnp.asarray(
+                    np.array([[2.0, 0.0, 0.0], [0.5, 3.0, 0.0], [0.1, 0.2, 4.0]])
+                    @ np.linalg.qr(np.random.default_rng(seed).normal(size=(3, 3)))[0]
+                )
                 for seed in (0, 1, 2)
             ],
         ],
