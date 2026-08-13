@@ -21,7 +21,12 @@ import jax
 import jax.numpy as jnp
 import yaml
 
-from kups.application.mcmc.analysis import MCMCAnalysisResult, analyze_mcmc_file
+from kups.application.mcmc.analysis import (
+    MCMCAnalysisResult,
+    WidomAnalysisResult,
+    analyze_mcmc_file,
+    analyze_widom_file,
+)
 from kups.application.md.analysis import MDAnalysisResult, analyze_md_file
 from kups.core.utils.block_average import BlockAverageResult
 
@@ -37,6 +42,7 @@ CLI_COMMANDS: dict[str, str] = {
     "md": "kups_md",
     "nvt": "kups_mcmc_rigid",
     "gcmc": "kups_mcmc_rigid",
+    "widom": "kups_mcmc_widom",
 }
 
 SIM_ENV = {**os.environ, "XLA_PYTHON_CLIENT_PREALLOCATE": "false"}
@@ -52,10 +58,16 @@ def _analyze_md_first_system(path: Path) -> MDAnalysisResult:
     return next(iter(results.values()))
 
 
+def _analyze_widom_first_system(path: Path) -> WidomAnalysisResult:
+    results = analyze_widom_file(path, n_blocks=N_BLOCKS)
+    return next(iter(results.values()))
+
+
 ANALYZERS: dict[str, Callable[[Path], Any]] = {
     "nvt": _analyze_mcmc_first_system,
     "gcmc": _analyze_mcmc_first_system,
     "md": _analyze_md_first_system,
+    "widom": _analyze_widom_first_system,
 }
 
 

@@ -24,6 +24,7 @@ EXPERIMENTS: list[tuple[str, str, str]] = [
     ("md_npt_lj_argon_baoab", "md", "kups_md"),
     ("nvt_50co2_30box", "nvt", "kups_mcmc_rigid"),
     ("gcmc_co2_rubtak", "gcmc", "kups_mcmc_rigid"),
+    ("widom_lj_argon", "widom", "kups_mcmc_widom"),
 ]
 
 SIM_ENV = {**os.environ, "XLA_PYTHON_CLIENT_PREALLOCATE": "false"}

@@ -1,0 +1,32 @@
+adsorbates:
+  - critical_temperature: 150.8
+    critical_pressure: 4_870_000
+    acentric_factor: 0.0
+    positions:
+      - [0, 0, 0]
+    symbols: [Ar]
+
+hosts:
+  - cif_file: ../host/argon_fcc.cif
+    pressure: 100_000
+    temperature: 100.0
+    init_adsorbates: [0]
+
+run:
+  out_file: ../../widom_lj_argon_ref.h5
+  num_warmup_cycles: 10_000
+  num_cycles: 20_000
+  seed: 42
+
+lj:
+  cutoff: 10.0
+  parameters:
+    Ar: [3.405, 0.01032356174398622]
+  tail_correction: true
+  mixing_rule: lorentz_berthelot
+
+ewald:
+  real_cutoff: 12.0
+  precision: 1.e-6
+
+max_num_adsorbates: 1

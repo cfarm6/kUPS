@@ -1,0 +1,12 @@
+simulation_type: widom
+hdf5_output: widom_lj_argon.h5
+observables:
+  excess_chemical_potential:
+    expected_mean: 1.2606834242393086
+    expected_sem: 0.008617330336040249
+  henry_coefficient:
+    expected_mean: 3.1484347592901196e-58
+    expected_sem: 3.1484347588601043e-58
+  heat_of_adsorption:
+    expected_mean: -1.1468823343705687
+    expected_sem: 0.0

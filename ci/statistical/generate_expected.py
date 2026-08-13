@@ -15,7 +15,7 @@ import jax
 import jax.numpy as jnp
 import yaml
 
-from kups.application.mcmc.analysis import analyze_mcmc_file
+from kups.application.mcmc.analysis import analyze_mcmc_file, analyze_widom_file
 from kups.application.md.analysis import analyze_md_file
 from kups.core.utils.block_average import BlockAverageResult
 
@@ -33,6 +33,12 @@ def _analyze_mcmc_first_system(path: Path) -> Any:
 def _analyze_md_first_system(path: Path) -> Any:
     """Analyze MD file and return the first system's result."""
     results = analyze_md_file(path, n_blocks=N_BLOCKS)
+    return next(iter(results.values()))
+
+
+def _analyze_widom_first_system(path: Path) -> Any:
+    """Analyze Widom file and return the first system's result."""
+    results = analyze_widom_file(path, n_blocks=N_BLOCKS)
     return next(iter(results.values()))
 
 
@@ -66,7 +72,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Generate expected values YAML")
     parser.add_argument("hdf5_path", type=Path, help="Path to HDF5 output file")
     parser.add_argument(
-        "sim_type", choices=["nvt", "gcmc", "md"], help="Simulation type"
+        "sim_type", choices=["nvt", "gcmc", "md", "widom"], help="Simulation type"
     )
     parser.add_argument(
         "-o",
@@ -80,6 +86,7 @@ def main() -> None:
         "nvt": _analyze_mcmc_first_system,
         "gcmc": _analyze_mcmc_first_system,
         "md": _analyze_md_first_system,
+        "widom": _analyze_widom_first_system,
     }
     analyze_fn = analyze_fns[args.sim_type]
     result = analyze_fn(args.hdf5_path)
