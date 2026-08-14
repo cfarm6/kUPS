@@ -351,7 +351,16 @@ class HDF5StorageWriter[State, WriterConfig]:
         for i, group in enumerate(self._group_writers):
             if group.logging_frequency.should_log(step):
                 index = group.logging_frequency.dataset_index(step)
-                to_log.append((i, index, group.view(state)))
+                data = group.view(state)
+                if jax.default_backend() == "tt":
+                    # tt port (wayfinder #85): the view is lazy — it holds
+                    # references to device arrays, and the background thread's
+                    # deferred ``np.asarray`` (up to batch_size frames later)
+                    # reads them after ``donate_argnums`` has recycled the
+                    # buffers, yielding frozen/garbage frames. Materialize a
+                    # host copy here, before donation.
+                    data = jax.device_get(data)
+                to_log.append((i, index, data))
         return to_log
 
     def _write(self, to_write: list[tuple[int, Index, Any]]) -> None:
