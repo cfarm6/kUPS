@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Protocol, overload, override, runtime_checkabl
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 
 from kups.core.utils.jax import dataclass, jit, vectorize
@@ -518,6 +519,23 @@ class GeneralSquareMatrix:
         return GeneralSquareMatrix(self.array * factor)
 
 
+def _exact_diagonal(array: Array) -> Array:
+    """Extract the last two dims' diagonal, exactly.
+
+    tt port (wayfinder #102): ``jnp.diagonal``, two-advanced-index gathers,
+    ``jnp.stack`` and reduces all quantize on the tt device (21.04 -> 21.0
+    bf16 / 21.03125 f16), corrupting every wrap/to_real/volume. A reshape to a
+    flat last axis plus a single 1-D index gather is exact on the tt stack
+    (#75 path) and bit-identical to ``jnp.diagonal`` on CPU.
+    """
+    n = array.shape[-1]
+    flat = array.reshape(*array.shape[:-2], n * n)
+    diag_idx = tuple(range(0, n * n, n + 1))
+    if isinstance(flat, np.ndarray):
+        return flat[..., diag_idx]
+    return flat[..., jnp.asarray(diag_idx)]
+
+
 @dataclass
 class LowerTriangularSquareMatrix(GeneralSquareMatrix):
     array: Array
@@ -546,7 +564,7 @@ class LowerTriangularSquareMatrix(GeneralSquareMatrix):
 
     @override
     def det(self) -> Array:
-        return jnp.prod(jnp.diagonal(self.array, axis1=-2, axis2=-1), axis=-1)
+        return jnp.prod(_exact_diagonal(self.array), axis=-1)
 
     @override
     def inverse(self) -> SquareMatrix:
@@ -581,12 +599,12 @@ class DiagonalSquareMatrix(LowerTriangularSquareMatrix):
                 return LowerTriangularSquareMatrix(product)
             return GeneralSquareMatrix(product)
         # The diagonal matrix-vector product is side-invariant.
-        diag = jnp.diagonal(self.array, axis1=-2, axis2=-1)
+        diag = _exact_diagonal(self.array)
         return diag * x
 
     @override
     def inverse(self) -> SquareMatrix:
-        diag_inv = 1.0 / jnp.diagonal(self.array, axis1=-2, axis2=-1)
+        diag_inv = 1.0 / _exact_diagonal(self.array)
         eye = jnp.eye(diag_inv.shape[-1], dtype=self.array.dtype)
         return DiagonalSquareMatrix(diag_inv[..., None] * eye)
 

@@ -11,10 +11,18 @@ from typing import Callable
 
 import ase
 import ase.io
+import jax
+import numpy as np
 import jax.numpy as jnp
 from jax import Array
 
-from kups.core.cell import AnyPeriodicity, Cell, TriclinicFrame, to_lower_triangular
+from kups.core.cell import (
+    AnyPeriodicity,
+    Cell,
+    OrthogonalFrame,
+    TriclinicFrame,
+    to_lower_triangular,
+)
 from kups.core.data import Index, Table
 from kups.core.typing import ExclusionId, InclusionId, Label, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, tt_safe_asarray
@@ -96,10 +104,32 @@ def _particles_from_atoms(
     Table[ParticleId, Particles], Cell[AnyPeriodicity], Callable[[Array], Array]
 ]:
     """Build particle data and cell from an ASE Atoms object."""
-    L, uc_transform = to_lower_triangular(jnp.asarray(atoms.cell.array))
+    L_np = np.asarray(atoms.cell.array)
+    L, uc_transform = to_lower_triangular(L_np)  # host einsum: f64-exact
     pbc = (bool(atoms.pbc[0]), bool(atoms.pbc[1]), bool(atoms.pbc[2]))
-    cell = Cell.from_pbc(TriclinicFrame.from_matrix(L), pbc)
-    positions = uc_transform(tt_safe_asarray(atoms.positions))
+    frame_cls = TriclinicFrame
+    if jax.default_backend() == "tt":
+        # tt port (wayfinder #102): on diagonal cells the TriclinicFrame
+        # wrap/to_real/to_fractional lower to Tensix FPU matmuls (TF32-class
+        # precision — ~1e-3 fractional error) whose error flips the periodic
+        # fold boundary (position jumps of one box length every step) and
+        # corrupts the trajectory. OrthogonalFrame keeps the same ops on the
+        # exact SFPU elementwise path (r/L, r*L). Physics-identical for a
+        # diagonal cell; other backends keep TriclinicFrame untouched.
+        _L = np.asarray(L)
+        if np.allclose(_L, np.diag(np.diag(_L))):
+            frame_cls = OrthogonalFrame
+    # f32 host arrays: the tt device materializes f64 device tensors as bf16
+    # (21.04 -> 21.0 — #85 family) and jnp.diagonal on the device returns the
+    # diagonal bf16-quantized (wayfinder #102); casting after creation cannot
+    # recover the lost mantissa. Construct the frame from host f32 numpy so
+    # the transfer is exact.
+    L32 = np.asarray(L, dtype=np.float32)
+    if frame_cls is OrthogonalFrame:
+        cell = Cell.from_pbc(OrthogonalFrame(jnp.asarray(np.diag(L32))), pbc)
+    else:
+        cell = Cell.from_pbc(frame_cls.from_matrix(L32), pbc)
+    positions = tt_safe_asarray(uc_transform(np.asarray(atoms.positions)))
     masses = tt_safe_asarray(atoms.get_masses())
     atomic_numbers = tt_safe_asarray(atoms.get_atomic_numbers())
     n_atoms = len(masses)

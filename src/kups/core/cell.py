@@ -905,12 +905,14 @@ class OrthogonalFrame(LinearFrame, Sliceable):
     @property
     @override
     def vectors(self) -> Array:
-        return self.lengths[..., :, None] * jnp.eye(3)
+        return self.lengths[..., :, None] * jnp.eye(3, dtype=self.lengths.dtype)
 
     @property
     @override
     def inverse_vectors(self) -> Array:
-        return (1.0 / self.lengths)[..., :, None] * jnp.eye(3)
+        return (1.0 / self.lengths)[..., :, None] * jnp.eye(
+            3, dtype=self.lengths.dtype
+        )
 
     @property
     @override
@@ -929,6 +931,19 @@ class OrthogonalFrame(LinearFrame, Sliceable):
     @override
     def to_real(self, r_frac: Array) -> Array:
         return r_frac * self.lengths
+
+    @override
+    def materialize(self) -> Self:
+        if jax.default_backend() == "tt":
+            # tt port (wayfinder #102): BaseFrame.materialize -> MaterializedFrame
+            # lowers to_real/to_fractional to Tensix FPU matmuls (TF32-class,
+            # ~1e-3 fractional error) even for diagonal cells — the per-edge r2
+            # in the LJ energy then carries ~0.1-0.3 error and the forces come
+            # out ~26% low. Returning the unmaterialized frame keeps the exact
+            # SFPU elementwise ops (r/L, r*L). Physics-identical for a diagonal
+            # cell; other backends keep the materialized path untouched.
+            return self
+        return super().materialize()
 
     @override
     def tile(self, multiplicities: tuple[int, int, int]) -> Self:
@@ -1323,5 +1338,19 @@ def to_lower_triangular(vecs: Array) -> tuple[Array, TriclinicMap]:
     R = R * signs[:, None]
     Q = Q * signs[None, :]
     L = jnp.asarray(R.T)
-    Q = jnp.asarray(Q)
-    return L, partial(jnp.einsum, "...ij,...i->...j", Q)
+    # tt port: runtime f64 array ARGUMENTS materialize as f16 on the tt
+    # backend (wayfinder #102): eager or jitted einsum/matmul over the
+    # caller's runtime positions array quantizes the rotation (f16 ulp
+    # 0.0156 A at 21 A box scale — corrupts init positions and the whole
+    # MD trajectory). numpy input takes the host einsum path, which keeps
+    # f64 exact; jax-array callers (tests) keep the jnp path, which is
+    # exact on non-tt backends and under closure-captured constants.
+    Q_host = Q
+    Q_jax = jnp.asarray(Q)
+
+    def _uc(r):
+        if isinstance(r, np.ndarray):
+            return np.einsum("...ij,...i->...j", Q_host, r)
+        return jnp.einsum("...ij,...i->...j", Q_jax, r)
+
+    return L, _uc

@@ -578,6 +578,39 @@ class TestToLowerTriangular:
         L, _ = to_lower_triangular(vecs)
         assert jnp.all(jnp.diagonal(L) > 0)
 
+    def test_numpy_mapper_preserves_f64_exactly(self):
+        """Regression (wayfinder #102): the numpy-input branch of the mapper
+        must run the rotation host-side with full f64 precision. On the tt
+        backend, jnp.einsum over a runtime f64 array materializes f16 output
+        (quantizing positions at the 2^-6 grid of a 21 A box); the host path
+        keeps the rotation exact on every backend."""
+        vecs = jnp.asarray(np.diag([21.04, 21.04, 21.04]))
+        _, mapper = to_lower_triangular(vecs)
+        r = np.array([20.93479919, 0.37871999, 0.19567201])
+        out = mapper(r)
+        # numpy branch: host einsum, f64-exact
+        assert isinstance(out, np.ndarray)
+        npt.assert_allclose(out, r @ np.eye(3), atol=0.0, rtol=0.0)
+
+    @pytest.mark.skipif(
+        jax.default_backend() == "tt",
+        reason="tt materializes runtime-array einsum as f16 (wayfinder #102); "
+        "the jnp branch of the mapper is intentionally lossy there — "
+        "only the numpy branch is used on tt",
+    )
+    def test_numpy_mapper_matches_jnp_mapper_general_rotation(self):
+        """The numpy and jax branches agree for a non-trivial rotation on
+        backends where the jnp branch is exact (non-tt)."""
+        vecs = jnp.array([[1.0, 2.0, 0.3], [0.2, 3.0, 0.1], [0.5, 0.4, 4.0]])
+        _, mapper = to_lower_triangular(vecs)
+        r = np.array([[0.7, 0.3, 0.5], [0.123, 0.456, 0.789]])
+        out_np = mapper(r)
+        assert isinstance(out_np, np.ndarray)
+        out_jnp = np.asarray(mapper(jnp.asarray(r)))
+        npt.assert_allclose(out_np, out_jnp, atol=1e-12)
+        # host path must not quantize to the f16 grid
+        assert not np.array_equal(out_np, out_np.astype(np.float16).astype(np.float64))
+
 
 _FRAMES = pytest.mark.parametrize(
     "frame",

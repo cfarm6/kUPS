@@ -167,7 +167,15 @@ def lennard_jones_edge_energy(inp: LennardJonesInput) -> Array:
     else:
         epsilon = inp.parameters.epsilon[edg_species[:, 0], edg_species[:, 1]]
         sigma = inp.parameters.sigma[edg_species[:, 0], edg_species[:, 1]]
-    r2 = jnp.sum(graph.edge_shifts[:, 0] ** 2, axis=-1)
+    if jax.default_backend() == "tt":
+        # tt port (wayfinder #102): tt reduce lowers with 16-bit Dst registers
+        # (fp32_dest_acc_en=false default) — r2 comes back f16-rounded (0.17
+        # error at r2~330), corrupting every LJ force. Explicit add tree stays
+        # on the exact SFPU f32 path. CPU keeps the reduce.
+        _s = graph.edge_shifts[:, 0] ** 2
+        r2 = _s[..., 0] + _s[..., 1] + _s[..., 2]
+    else:
+        r2 = jnp.sum(graph.edge_shifts[:, 0] ** 2, axis=-1)
     c6 = (sigma**2 / r2) ** 3
     edge_energy = 4 * epsilon * (c6**2 - c6)
     batch = graph.edge_batch_mask.indices
