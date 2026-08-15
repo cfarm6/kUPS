@@ -502,10 +502,17 @@ class Hdf5ObjWriter[Storage]:
             self.datasets[0].file.flush()
 
 
-@jit
-def _stack_leaves(states: list[Any]) -> list[jax.Array]:
+def _stack_leaves(states: list[Any]) -> list[np.ndarray]:
+    """Stack each leaf across ``states`` with NumPy.
+
+    The queued ``states`` are host materializations (``jax.device_get`` on the
+    tt backend, wayfinder #85): pure-NumPy stacking keeps the background
+    writer off the device entirely — a ``@jit jnp.stack`` under
+    ``JAX_PLATFORMS=tt`` would push host data back through the tt backend on
+    every block flush and deadlock against the main thread's device transfers.
+    """
     leaves = [jax.tree.leaves(s) for s in states]
-    return [jnp.stack([step[j] for step in leaves]) for j in range(len(leaves[0]))]
+    return [np.stack([step[j] for step in leaves]) for j in range(len(leaves[0]))]
 
 
 @dataclass
