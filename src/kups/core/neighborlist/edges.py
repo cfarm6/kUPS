@@ -11,6 +11,7 @@ pairs (``Degree=2``), angles (``Degree=3``), dihedrals (``Degree=4``), etc.
 
 from __future__ import annotations
 
+import dataclasses
 from typing import override
 
 import jax
@@ -25,7 +26,7 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
-from kups.core.utils.jax import dataclass
+from kups.core.utils.jax import dataclass, pairwise_sum
 
 
 @jax.custom_vjp
@@ -146,7 +147,29 @@ class Edges[Degree: int](Sliceable):
             Array of shape `(n_edges, Degree-1, 3)` containing absolute shift vectors.
         """
         lattice = systems.map_data(lambda x: x.cell.materialize())
-        cells = lattice[particles[self.indices[:, 0]].system][:, None]
+        sys_idx = particles[self.indices[:, 0]].system
+        if jax.default_backend() == "tt":
+            # tt port (wayfinder #103): every gather on tt (Table or raw-array,
+            # ttir.embedding or ttir.gather) bf16-casts its f32 operand, so
+            # gathering the cell (21.04 -> 21.0) freezes the per-edge shifts'
+            # length dependence and the virial cell term h^T·∂U/∂h vanishes
+            # (canonical pressure 66% low). Select the per-edge frame params
+            # with a masked jnp.where (exact on tt) over the small system
+            # axis, reduced with the pairwise-add tree (no reduce kernel).
+            frame = lattice.data.frame
+            leaves = {}
+            for f in dataclasses.fields(frame):
+                v = getattr(frame, f.name)
+                if isinstance(v, Array) and v.ndim > 0:
+                    n_sys = v.shape[0]
+                    sel = sys_idx.indices[None, :, None] == jnp.arange(n_sys)[:, None, None]
+                    rows = jnp.where(sel, v[None, :, :], 0.0)  # (n_sys, n_edges, C)
+                    leaves[f.name] = pairwise_sum(rows)[:, None]  # (n_edges, 1, C)
+                else:
+                    leaves[f.name] = v
+            cells_frame = type(frame)(**leaves)
+            return cells_frame.to_real(self.shifts)
+        cells = lattice[sys_idx][:, None]
         return cells.frame.to_real(self.shifts)
 
     @property

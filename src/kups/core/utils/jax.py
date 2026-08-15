@@ -979,6 +979,35 @@ def kahan_summation[T](*summands: T, compensate: T | None = None) -> tuple[T, T]
     return result, compensate
 
 
+def pairwise_sum(x: Array) -> Array:
+    """Exact sum over the leading axis via a log-depth tree of elementwise adds.
+
+    tt port (wayfinder #103): the tt reduce/scatter datapaths bf16-cast their
+    inputs, so ``jnp.sum``/``jax.ops.segment_sum`` corrupt sums of
+    non-bf16-exact values (0.02-1.3% measured; worse with cancellation).
+    Elementwise ``jnp.add`` is exact f32 on tt (#102), so a pairwise-add tree
+    avoids the reduce kernel entirely. On CPU the result matches ``jnp.sum``
+    to rounding order (exact for power-of-two row counts).
+
+    Args:
+        x: Array reduced over its leading axis (any trailing shape).
+
+    Returns:
+        The sum over axis 0, shape ``x.shape[1:]`` (scalar for 1-D input).
+    """
+    flat = x.reshape(x.shape[0], -1)
+    n = flat.shape[0]
+    if n & (n - 1):  # pad to a power of two with zeros (sum unchanged)
+        pad = 1 << (n - 1).bit_length()
+        flat = jnp.concatenate(
+            [flat, jnp.zeros((pad - n, flat.shape[1]), dtype=flat.dtype)], axis=0
+        )
+    while flat.shape[0] > 1:
+        pair = flat.reshape(2, flat.shape[0] // 2, flat.shape[1])
+        flat = pair[0] + pair[1]
+    return flat.reshape(x.shape[1:]) if x.ndim > 1 else flat.reshape(())
+
+
 @jax.custom_jvp
 def non_differentiable[T](x: T) -> T:
     """Identity function that raises on differentiation.

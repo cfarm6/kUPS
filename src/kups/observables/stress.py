@@ -28,34 +28,11 @@ from jax import Array
 
 from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data import Index, Table
-
-
-def _pairwise_sum(x: Array) -> Array:
-    """Exact sum over the leading axis via a log-depth tree of elementwise adds.
-
-    tt port (wayfinder #103): the tt reduce/scatter datapaths bf16-cast their
-    inputs, so ``jnp.sum``/``jax.ops.segment_sum`` corrupt sums of
-    non-bf16-exact values by ~0.02-1.3% (amplified by cancellation in the
-    virial trace; the canonical NVE pressure was 459σ out). Elementwise
-    ``jnp.add`` is exact f32 on tt (#102), so a pairwise-add tree avoids the
-    reduce kernel entirely. On CPU the result matches ``jnp.sum`` to rounding
-    order (exact for power-of-two row counts).
-    """
-    flat = x.reshape(x.shape[0], -1)
-    n = flat.shape[0]
-    if n & (n - 1):  # pad to a power of two with zeros (sum unchanged)
-        pad = 1 << (n - 1).bit_length()
-        flat = jnp.concatenate(
-            [flat, jnp.zeros((pad - n, flat.shape[1]), dtype=flat.dtype)], axis=0
-        )
-    while flat.shape[0] > 1:
-        pair = flat.reshape(2, flat.shape[0] // 2, flat.shape[1])
-        flat = pair[0] + pair[1]
-    return flat.reshape(x.shape[1:]) if x.ndim > 1 else flat.reshape(())
+from kups.core.utils.jax import pairwise_sum
 
 
 def _exact_sum_over(index: Index[SystemId], array: Array) -> Table[SystemId, Array]:
-    """``Index.sum_over`` with an exact reduction on tt (see :func:`_pairwise_sum`).
+    """``Index.sum_over`` with an exact reduction on tt (see :func:`pairwise_sum`).
 
     On tt, masks each row by its segment id (``jnp.where`` is exact) and sums
     the masked rows with the pairwise tree, instead of
@@ -68,7 +45,7 @@ def _exact_sum_over(index: Index[SystemId], array: Array) -> Table[SystemId, Arr
         index.indices.shape[0], n, *((1,) * (array.ndim - 1))
     )
     masked = jnp.where(mask, array[:, None], 0.0)  # (rows, n, ...)
-    return Table(index.keys, _pairwise_sum(masked), _cls=index._cls)
+    return Table(index.keys, pairwise_sum(masked), _cls=index._cls)
 from kups.core.lens import bind
 from kups.core.typing import (
     GroupId,
