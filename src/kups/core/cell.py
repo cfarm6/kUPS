@@ -917,7 +917,11 @@ class OrthogonalFrame(LinearFrame, Sliceable):
     @property
     @override
     def volume(self) -> Array:
-        return jnp.prod(self.lengths, axis=-1)
+        # tt port (wayfinder #103): jnp.prod lowers through the tt reduce
+        # datapath, which bf16-casts its inputs (f32 21.04^3 -> 9216 vs CPU
+        # 9314.02). An explicit multiply chain is elementwise arithmetic,
+        # exact on tt, and bit-identical to jnp.prod for 3 elements on CPU.
+        return self.lengths[..., 0] * self.lengths[..., 1] * self.lengths[..., 2]
 
     @property
     @override

@@ -28,6 +28,47 @@ from jax import Array
 
 from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data import Index, Table
+
+
+def _pairwise_sum(x: Array) -> Array:
+    """Exact sum over the leading axis via a log-depth tree of elementwise adds.
+
+    tt port (wayfinder #103): the tt reduce/scatter datapaths bf16-cast their
+    inputs, so ``jnp.sum``/``jax.ops.segment_sum`` corrupt sums of
+    non-bf16-exact values by ~0.02-1.3% (amplified by cancellation in the
+    virial trace; the canonical NVE pressure was 459σ out). Elementwise
+    ``jnp.add`` is exact f32 on tt (#102), so a pairwise-add tree avoids the
+    reduce kernel entirely. On CPU the result matches ``jnp.sum`` to rounding
+    order (exact for power-of-two row counts).
+    """
+    flat = x.reshape(x.shape[0], -1)
+    n = flat.shape[0]
+    if n & (n - 1):  # pad to a power of two with zeros (sum unchanged)
+        pad = 1 << (n - 1).bit_length()
+        flat = jnp.concatenate(
+            [flat, jnp.zeros((pad - n, flat.shape[1]), dtype=flat.dtype)], axis=0
+        )
+    while flat.shape[0] > 1:
+        pair = flat.reshape(2, flat.shape[0] // 2, flat.shape[1])
+        flat = pair[0] + pair[1]
+    return flat.reshape(x.shape[1:]) if x.ndim > 1 else flat.reshape(())
+
+
+def _exact_sum_over(index: Index[SystemId], array: Array) -> Table[SystemId, Array]:
+    """``Index.sum_over`` with an exact reduction on tt (see :func:`_pairwise_sum`).
+
+    On tt, masks each row by its segment id (``jnp.where`` is exact) and sums
+    the masked rows with the pairwise tree, instead of
+    ``jax.ops.segment_sum`` whose scatter datapath bf16-casts its inputs.
+    """
+    if jax.default_backend() != "tt":
+        return index.sum_over(array)
+    n = index.num_labels
+    mask = (index.indices[:, None] == jnp.arange(n)[None, :]).reshape(
+        index.indices.shape[0], n, *((1,) * (array.ndim - 1))
+    )
+    masked = jnp.where(mask, array[:, None], 0.0)  # (rows, n, ...)
+    return Table(index.keys, _pairwise_sum(masked), _cls=index._cls)
 from kups.core.lens import bind
 from kups.core.typing import (
     GroupId,
@@ -108,7 +149,9 @@ def _stress_via_virial_theorem(
     system: Index[SystemId],
 ) -> Array:
     """σ = −1/V sym[Σ_i r_i ⊗ ∂U/∂r_i + h^T · ∂U/∂h], zeroed on non-periodic axes."""
-    pos_outer = system.sum_over(position_gradients[:, None] * positions[..., None]).data
+    pos_outer = _exact_sum_over(
+        system, position_gradients[:, None] * positions[..., None]
+    ).data
     pos_lower = jnp.tril(pos_outer)
     cell_lower = _lower_sym_cell_virial(cell.vectors, vector_gradients)
     volume = cell.volume[..., None, None]
@@ -142,8 +185,8 @@ def _molecular_stress_via_virial_theorem(
     rel_pos = batched_cells.wrap(
         positions - com.at[group.indices].get(mode="fill", fill_value=0)
     )
-    pos_outer = system.sum_over(
-        position_gradients[:, None] * (positions - rel_pos)[..., None]
+    pos_outer = _exact_sum_over(
+        system, position_gradients[:, None] * (positions - rel_pos)[..., None]
     ).data
     pos_lower = jnp.tril(pos_outer)
     cell_lower = _lower_sym_cell_virial(system_cell.vectors, vector_gradients)
@@ -218,7 +261,7 @@ def total_lattice_gradient[C: Cell[AnyPeriodicity]](
         )
 
     outer = positions[:, :, None] * position_gradients[:, None, :]  # r_i ⊗ ∂E/∂r_i
-    coupling = system.sum_over(cell[system].inverse_vectors.mT @ outer)
+    coupling = _exact_sum_over(system, cell[system].inverse_vectors.mT @ outer)
     return compose_gradient(cell, coupling, partial_lattice_gradient)
 
 
