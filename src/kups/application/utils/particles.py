@@ -95,7 +95,15 @@ def _particles_from_path(
     Table[ParticleId, Particles], Cell[AnyPeriodicity], Callable[[Array], Array]
 ]:
     """Read an ASE-readable file and build cached particle data and cell."""
-    return _particles_from_atoms(next(ase.io.iread(path, index=-1, store_tags=True)))
+    try:
+        atoms = next(ase.io.iread(path, index=-1, store_tags=True))
+    except TypeError:
+        # Input-robustness fallback (wayfinder #105): ASE xyz/traj readers
+        # reject `store_tags` (CIF-only keyword); retry without it so
+        # non-CIF formats — required for non-periodic cells, which CIF cannot
+        # carry (`pbc=False`) — load through the same path.
+        atoms = next(ase.io.iread(path, index=-1))
+    return _particles_from_atoms(atoms)
 
 
 def _particles_from_atoms(
