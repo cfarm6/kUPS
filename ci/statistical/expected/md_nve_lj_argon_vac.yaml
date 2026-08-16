@@ -1,0 +1,21 @@
+simulation_type: md
+hdf5_output: md_nve_lj_argon_vac.h5
+observables:
+  potential_energy:
+    expected_mean: -0.06051778785287221
+    expected_sem: 0.00017830268041632634
+  kinetic_energy:
+    expected_mean: 0.0013929259929373863
+    expected_sem: 0.00017830266946653565
+  total_energy:
+    expected_mean: -0.05912486185993483
+    expected_sem: 1.2013083912400196e-11
+  temperature:
+    expected_mean: 3.592053425232862
+    expected_sem: 0.4598038358339561
+  pressure:
+    expected_mean: 0.0
+    expected_sem: 0.0
+  volume:
+    expected_mean: 15625.0
+    expected_sem: 1.6263032587282564e-13
