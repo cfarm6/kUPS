@@ -157,11 +157,24 @@ class _RotPositions:
     group: Index[GroupId]
 
 
+def _draws_slice(state: object, name: str) -> Array | None:
+    """tt port (wayfinder #92): slice one per-step draw leaf from the state bundle.
+
+    ``None`` on CPU (no bundle) so call sites fall back to the traced device
+    draw and reference runs stay byte-identical.
+    """
+    draws = getattr(state, "rng_draws", None)
+    if draws is None:
+        return None
+    return getattr(draws, name)[state.rng_step[0]]
+
+
 def random_rotate_groups(
     key: Array,
     particles: Table[ParticleId, HasPositionsGroupSystem],
     systems: Table[SystemId, HasCell[AnyPeriodicity]],
     step_width: Array,
+    u: Array | None = None,
 ) -> Array:
     """Rotate molecular groups around their centers of mass.
 
@@ -170,6 +183,8 @@ def random_rotate_groups(
         particles: Indexed particles with positions, group, and system indices.
         systems: Indexed systems with cell data.
         step_width: Rotation step size (0=no rotation, 1=full random rotation).
+        u: Host-precomputed Shoemake uniforms (``(n_sys, 3)``) on tt (wayfinder
+            #92); ``None`` draws on device as before.
 
     Returns:
         Rotated particle positions with center of mass preserved.
@@ -179,7 +194,10 @@ def random_rotate_groups(
     cell = systems.data.cell
     chain = key_chain(key)
     n_sys = len(systems)
-    rotations = Quaternion.random(next(chain), (n_sys,)) ** step_width
+    if u is None:
+        rotations = Quaternion.random(next(chain), (n_sys,)) ** step_width
+    else:
+        rotations = Quaternion.from_uniform(u) ** step_width
     group_index = Index(
         tuple(GroupId(i) for i in range(n_sys)),
         system_ids,
@@ -229,6 +247,7 @@ def propose_group_translation(
     step_width: Table[SystemId, Array],
     capacity: Capacity[int],
     distribution: SymmetricTranslationDistribution = jax.random.normal,
+    translation: Array | None = None,
 ) -> ParticlePositionChanges:
     """Propose a random rigid-body translation of one group per system."""
     chain = key_chain(key)
@@ -238,9 +257,12 @@ def propose_group_translation(
     selected_particles = Table.arange(selected_data, label=ParticleId)
     sys_idx = systems.index
     width = step_width[sys_idx]
+    if translation is None:
+        # tt port (wayfinder #92): host-precomputed normal offsets.
+        translation = distribution(next(chain), (n_sys, 3))
     translations = Table(
         systems.keys,
-        distribution(next(chain), (n_sys, 3)) * width[:, None],
+        translation * width[:, None],
     )
     new_positions = translate_groups(translations, selected_particles, systems)
     return ParticlePositionChanges(particle_ids=selected, new_positions=new_positions)
@@ -253,6 +275,7 @@ def propose_group_rotation(
     systems: Table[SystemId, HasCell[AnyPeriodicity]],
     step_width: Table[SystemId, Array],
     capacity: Capacity[int],
+    rotation_u: Array | None = None,
 ) -> ParticlePositionChanges:
     """Propose a random rigid-body rotation of one group per system."""
     chain = key_chain(key)
@@ -262,7 +285,7 @@ def propose_group_rotation(
     selected_data = particles[selected]
     selected_particles = Table.arange(selected_data, label=ParticleId)
     new_positions = random_rotate_groups(
-        next(chain), selected_particles, systems, width
+        next(chain), selected_particles, systems, width, u=rotation_u
     )
     return ParticlePositionChanges(particle_ids=selected, new_positions=new_positions)
 
@@ -273,6 +296,8 @@ def propose_reinsertion(
     groups: Table[GroupId, HasSystemIndex],
     systems: Table[SystemId, HasCell[AnyPeriodicity]],
     capacity: Capacity[int],
+    reinsertion_u: Array | None = None,
+    reinsertion_offset: Array | None = None,
 ) -> ParticlePositionChanges:
     """Propose a random reinsertion (new position + rotation) of one group per system."""
     chain = key_chain(key)
@@ -281,14 +306,18 @@ def propose_reinsertion(
     selected_data = particles[selected]
     selected_particles = Table.arange(selected_data, label=ParticleId)
     rotated_positions = random_rotate_groups(
-        next(chain), selected_particles, systems, jnp.ones((n_sys,))
+        next(chain), selected_particles, systems, jnp.ones((n_sys,)), u=reinsertion_u
     )
     rotated_particles = (
         bind(selected_particles)
         .focus(lambda x: x.data.positions)
         .set(rotated_positions)
     )
-    rel_offsets = jax.random.uniform(next(chain), shape=(n_sys, 3))
+    if reinsertion_offset is None:
+        # tt port (wayfinder #92): host-precomputed fractional offsets.
+        rel_offsets = jax.random.uniform(next(chain), shape=(n_sys, 3))
+    else:
+        rel_offsets = reinsertion_offset
     abs_offsets = Table(
         systems.keys,
         triangular_3x3_matmul(systems.data.cell.vectors, rel_offsets),
@@ -595,6 +624,9 @@ def insert_random_motif(
     cell: Table[SystemId, Cell[AnyPeriodicity]],
     capacity: Capacity[int],
     enabled: Array | None = None,
+    motif_uniform: Array | None = None,
+    offset: Array | None = None,
+    u: Array | None = None,
 ) -> ExchangeChanges:
     """Generate a GCMC insertion move for random molecular motifs.
 
@@ -609,6 +641,10 @@ def insert_random_motif(
             gated with ``pred | ~enabled`` so the caller can run this branch
             unconditionally (compute-all-branches) without unselected-branch
             asserts firing (wayfinder #61). ``None`` keeps the asserts live.
+        motif_uniform: Host-precomputed motif selection uniforms on tt
+            (wayfinder #92); ``None`` draws on device as before.
+        offset: Host-precomputed fractional offsets ``(n_sys, 3)`` on tt.
+        u: Host-precomputed Shoemake uniforms ``(n_sys, 3)`` on tt.
 
     Returns:
         Exchange changes describing the insertion.
@@ -619,9 +655,13 @@ def insert_random_motif(
     motif_max_seg = motifs.data.motif.max_count
     n_motif_particles = len(motifs)
     chain = key_chain(key)
-    selected_motifs = jax.random.choice(
-        next(chain), jnp.arange(n_motifs), shape=(n_sys,)
-    )
+    if motif_uniform is None:
+        # tt port (wayfinder #92): host-precomputed motif selection.
+        selected_motifs = jax.random.choice(
+            next(chain), jnp.arange(n_motifs), shape=(n_sys,)
+        )
+    else:
+        selected_motifs = (motif_uniform * n_motifs).astype(jnp.int32)
     ins_system_ids, particle_idx = subselect(
         selected_motifs,
         motifs.data.motif.indices,
@@ -631,9 +671,16 @@ def insert_random_motif(
     # Gather the motifs
     new_positions = motifs.data.positions[particle_idx]
     # Rotate and translate
-    rel_offsets = jax.random.uniform(next(chain), shape=(n_sys, 3))
+    if offset is None:
+        # tt port (wayfinder #92): host-precomputed insertion offsets.
+        rel_offsets = jax.random.uniform(next(chain), shape=(n_sys, 3))
+    else:
+        rel_offsets = offset
     abs_offsets = triangular_3x3_matmul(cell.data.vectors, rel_offsets)
-    rotations = Quaternion.random(next(chain), (n_sys,))
+    if u is None:
+        rotations = Quaternion.random(next(chain), (n_sys,))
+    else:
+        rotations = Quaternion.from_uniform(u)
     sys_idx = Index(cell.keys, ins_system_ids)
     new_positions = (
         new_positions @ rotations[ins_system_ids] + abs_offsets[ins_system_ids]
@@ -706,6 +753,7 @@ def delete_random_motif(
     groups: Buffered[GroupId, HasMotifAndSystemIndex],
     capacity: Capacity[int],
     enabled: Array | None = None,
+    motif_uniform: Array | None = None,
 ) -> ExchangeChanges:
     """Generate a GCMC deletion move removing a random molecular group.
 
@@ -718,6 +766,8 @@ def delete_random_motif(
         enabled: Optional bool scalar, accepted for symmetry with
             ``insert_random_motif`` (wayfinder #61). Deletion has no
             selection-dependent asserts, so it is currently unused.
+        motif_uniform: Host-precomputed motif selection uniforms on tt
+            (wayfinder #92); ``None`` draws on device as before.
 
     Returns:
         Exchange changes describing the deletion.
@@ -730,7 +780,11 @@ def delete_random_motif(
     n_motif_particles = len(motifs)
 
     # Randomly select a motif to delete for each system
-    motifs_to_delete = jax.random.choice(next(chain), n_motifs, shape=(n_sys,))
+    if motif_uniform is None:
+        # tt port (wayfinder #92): host-precomputed motif selection.
+        motifs_to_delete = jax.random.choice(next(chain), n_motifs, shape=(n_sys,))
+    else:
+        motifs_to_delete = (motif_uniform * n_motifs).astype(jnp.int32)
     # Mark groups whose label matches selected motif and belong to correct system
     possible_group_ids = jnp.where(
         groups.data.motif.indices == motifs_to_delete[groups.data.system.indices],
@@ -1280,6 +1334,7 @@ def make_gcmc_mcmc_propagator[State, Move: Patch[Any]](
                     i.systems,
                     Table(i.translation_params.keys, i.translation_params.data.value),
                     i.move_capacity,
+                    translation=_draws_slice(s, "translation"),
                 ),
                 state.focus(lambda x: x.translation_params),
             )
@@ -1295,6 +1350,7 @@ def make_gcmc_mcmc_propagator[State, Move: Patch[Any]](
                     i.systems,
                     Table(i.rotation_params.keys, i.rotation_params.data.value),
                     i.move_capacity,
+                    rotation_u=_draws_slice(s, "rotation_u"),
                 ),
                 state.focus(lambda x: x.rotation_params),
             )
@@ -1309,6 +1365,8 @@ def make_gcmc_mcmc_propagator[State, Move: Patch[Any]](
                     i.groups,
                     i.systems,
                     i.move_capacity,
+                    reinsertion_u=_draws_slice(s, "reinsertion_u"),
+                    reinsertion_offset=_draws_slice(s, "reinsertion_offset"),
                 ),
                 state.focus(lambda x: x.reinsertion_params),
             )
@@ -1327,7 +1385,12 @@ def make_gcmc_mcmc_propagator[State, Move: Patch[Any]](
             inner = state(s)
             c = key_chain(key)
             move_key = next(c)
-            w = jax.random.randint(next(c), (), 0, 2)
+            w_uniform = _draws_slice(s, "exchange_uniform")
+            if w_uniform is None:
+                w = jax.random.randint(next(c), (), 0, 2)
+            else:
+                # tt port (wayfinder #92): host-precomputed insert/delete pick.
+                w = (w_uniform >= 0.5).astype(jnp.int32)
             if use_mask_selection():
                 # tt port (wayfinder #61): jax.lax.cond emits stablehlo.case,
                 # which does not compile on the tt backend (#43). Compute both
@@ -1343,6 +1406,9 @@ def make_gcmc_mcmc_propagator[State, Move: Patch[Any]](
                     inner.systems.map_data(lambda d: d.cell),
                     inner.move_capacity,
                     enabled=sel & (w == 0),
+                    motif_uniform=_draws_slice(s, "insert_motif_uniform"),
+                    offset=_draws_slice(s, "insert_offset"),
+                    u=_draws_slice(s, "insert_u"),
                 )
                 dele = delete_random_motif(
                     move_key,
@@ -1351,6 +1417,7 @@ def make_gcmc_mcmc_propagator[State, Move: Patch[Any]](
                     inner.groups,
                     inner.move_capacity,
                     enabled=sel & (w == 1),
+                    motif_uniform=_draws_slice(s, "delete_motif_uniform"),
                 )
                 return tree_map(lambda *cs: select_n(w, *cs), ins, dele)
             # Only the selected move runs, so just its assertions are checked.

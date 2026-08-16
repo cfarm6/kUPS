@@ -68,6 +68,32 @@ class Quaternion(Sliceable):
             )
 
     @classmethod
+    def from_uniform(cls, u: Array) -> Quaternion:
+        """Build uniform SO(3) quaternions from pre-drawn ``u ~ U[0,1)``.
+
+        The draw half of :meth:`random` (Shoemake 1992), factored out so the
+        tt backend can substitute host-drawn uniforms (wayfinder #92); the
+        ``u1,u2,u3`` -> quaternion math still runs on the device.
+
+        Args:
+            u: Array of shape ``(*batch, 3)`` of uniform draws.
+
+        Returns:
+            Random unit quaternion(s) with shape ``(*batch, 4)``.
+        """
+        u1, u2, u3 = u[..., 0], u[..., 1], u[..., 2]
+        q = jnp.stack(
+            [
+                jnp.sqrt(1 - u1) * jnp.sin(2 * jnp.pi * u2),
+                jnp.sqrt(1 - u1) * jnp.cos(2 * jnp.pi * u2),
+                jnp.sqrt(u1) * jnp.sin(2 * jnp.pi * u3),
+                jnp.sqrt(u1) * jnp.cos(2 * jnp.pi * u3),
+            ],
+            axis=-1,
+        )
+        return cls(q)
+
+    @classmethod
     def random(cls, key: Array, shape: tuple[int, ...] = ()) -> Quaternion:
         """Generate uniformly distributed random rotation quaternions.
 
@@ -84,19 +110,7 @@ class Quaternion(Sliceable):
         Reference:
             K. Shoemake, "Uniform random rotations", Graphics Gems III, 1992.
         """
-        u = jax.random.uniform(key, shape=(*shape, 3))
-        u1, u2, u3 = u[..., 0], u[..., 1], u[..., 2]
-
-        q = jnp.stack(
-            [
-                jnp.sqrt(1 - u1) * jnp.sin(2 * jnp.pi * u2),
-                jnp.sqrt(1 - u1) * jnp.cos(2 * jnp.pi * u2),
-                jnp.sqrt(u1) * jnp.sin(2 * jnp.pi * u3),
-                jnp.sqrt(u1) * jnp.cos(2 * jnp.pi * u3),
-            ],
-            axis=-1,
-        )
-        return Quaternion(q)
+        return cls.from_uniform(jax.random.uniform(key, shape=(*shape, 3)))
 
     @classmethod
     def identity(cls) -> Quaternion:

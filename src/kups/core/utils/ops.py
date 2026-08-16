@@ -104,6 +104,15 @@ def use_mask_selection() -> bool:
     return jax.default_backend() == "tt"
 
 
+def use_host_rng_draws() -> bool:
+    """tt port (wayfinder #92): host-side MC proposal draws on tt.
+
+    ``True`` only on the tt backend, so CPU/reference runs keep the traced
+    device draws and stay byte-identical to before.
+    """
+    return jax.default_backend() == "tt"
+
+
 def select_n(which: Array, *cands: Array) -> Array:
     """Like ``jax.lax.select_n`` but short-circuits when all candidates are identical.
 

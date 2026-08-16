@@ -77,6 +77,7 @@ from kups.core.propagator import (
     Propagator,
     ResetOnErrorPropagator,
     StateProperty,
+    compose_propagators,
     propagate_and_fix,
 )
 from kups.core.result import as_result_function
@@ -92,11 +93,13 @@ from kups.core.utils.jax import (
     no_jax_tracing,
     tree_map,
 )
+from kups.core.utils.ops import use_host_rng_draws
 from kups.mcmc.moves import (
     ExchangeChanges,
     make_gcmc_mcmc_propagator,
 )
 from kups.mcmc.probability import make_muvt_probability_ratio
+from kups.mcmc.rng import MCMCRngDraws, RngStepCounter
 from kups.observables.pressure import ideal_gas_pressure
 from kups.potential.classical.blocking import (
     BlockingSpheresParameters,
@@ -174,6 +177,8 @@ class MCMCState:
     rotation_params: Table[SystemId, ParameterSchedulerState]
     reinsertion_params: Table[SystemId, ParameterSchedulerState]
     exchange_params: Table[SystemId, ParameterSchedulerState]
+    rng_step: Array | None = None  # tt port (#92): per-step counter, indexes rng_draws
+    rng_draws: MCMCRngDraws | None = None  # tt port (#92): per-cycle host-drawn bundle
 
     @property
     def max_cutoff(self) -> Table[SystemId, Array]:
@@ -375,8 +380,14 @@ def make_propagator(
         reinsertion_weight=config.reinsertion_prob,
         exchange_weight=config.exchange_prob,
     )
+    inner = propagator
+    if use_host_rng_draws():
+        # tt port (wayfinder #92): per-step counter advancing state.rng_step;
+        # composed after the MCMC propagator so each step's draws are read at
+        # index state.rng_step[0] (0-based) before the counter moves on.
+        inner = compose_propagators(inner, RngStepCounter())
     propagator = LoopPropagator(
-        propagator,
+        inner,
         lambda x: jnp.maximum(
             x.groups.data.system.counts.data.max(), config.min_cycle_length
         ),

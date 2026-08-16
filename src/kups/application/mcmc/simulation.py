@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 
+import jax
 from jax import Array
 
 from kups.application.mcmc.data import RunConfig
@@ -20,6 +21,8 @@ from kups.core.logging import CompositeLogger, TqdmLogger
 from kups.core.propagator import Propagator
 from kups.core.storage import HDF5StorageWriter
 from kups.core.utils.jax import jit, key_chain
+from kups.core.utils.ops import use_host_rng_draws
+from kups.mcmc.rng import inject_host_rng_draws
 
 
 def run_mcmc[State: IsMCMCState](
@@ -51,6 +54,22 @@ def run_mcmc[State: IsMCMCState](
 
     chain = key_chain(key)
     cycle_fn = make_cycle_function(propagator)
+    if use_host_rng_draws():
+        # tt port (wayfinder #92): host-side per-cycle RNG substitution. The
+        # MC cycle loop is a python loop over jitted per-cycle calls, so each
+        # cycle's proposal draws are precomputed on the host (CPU, jax x64
+        # semantics) and carried in the state -- the donated cycle input --
+        # mirroring MD's chi2 substitution (wayfinder #44, md/simulation.py).
+        # Only states carrying `rng_draws` are injected; others (e.g. Widom)
+        # keep their traced device draws.
+        draw_seed = config.seed if config.seed is not None else int(
+            jax.random.key_data(key)[0]
+        )
+        _draw_chain = key_chain(jax.random.key(draw_seed))
+        _cycle_fn = cycle_fn
+
+        def cycle_fn(key: Array, state: State) -> Result[State, State]:
+            return _cycle_fn(key, inject_host_rng_draws(state, config, next(_draw_chain)))
     logging.info("Warming up (%d cycles)...", config.num_warmup_cycles)
     state = run_warmup_cycles(next(chain), cycle_fn, state, config.num_warmup_cycles)
     logging.info("Production run (%d cycles)...", config.num_cycles)

@@ -258,6 +258,7 @@ def propose_mixed[State, Changes](
     state: State,
     propose_fns: tuple[ChangesFn[State, Changes], ...],
     weights: tuple[float, ...] | None = None,
+    which_uniform: Array | None = None,
 ) -> tuple[Changes, LogProbabilityRatio, Array]:
     """Select one proposal at random and evaluate it.
 
@@ -270,7 +271,19 @@ def propose_mixed[State, Changes](
     """
     chain = key_chain(key)
     key = next(chain)
-    if weights is None:
+    draws = getattr(state, "rng_draws", None)
+    if which_uniform is None and draws is not None:
+        which_uniform = draws.which_uniform[state.rng_step[0]]
+    if which_uniform is not None:
+        # tt port (wayfinder #92): the draw is a host-precomputed uniform;
+        # recover the move index by counting cumulative probabilities with
+        # pure elementwise comparisons (no searchsorted/argmax on tt).
+        probs = jnp.array(
+            weights if weights is not None else [1.0] * len(propose_fns)
+        )
+        cum = jnp.cumsum(probs) / probs.sum()
+        which = (which_uniform[..., None] >= cum[:-1]).sum(axis=-1).astype(jnp.int32)
+    elif weights is None:
         which = jax.random.randint(next(chain), (), 0, len(propose_fns))
     else:
         probs = jnp.array(weights) / sum(weights)
@@ -353,7 +366,13 @@ class MCMCPropagator[State, Changes, Move: Patch[Any]](Propagator[State]):
             density = self.log_probability_ratio_fn(state, patch)
             log_p_ratio = move_log_ratio + density.data
             n_sys = len(log_p_ratio)
-            accept = log_p_ratio > jnp.log(jax.random.uniform(next(chain), (n_sys,)))
+            draws = getattr(state, "rng_draws", None)
+            if draws is not None:
+                # tt port (wayfinder #92): host-precomputed Metropolis draw.
+                accept_rand = draws.accept[state.rng_step[0]]
+            else:
+                accept_rand = jax.random.uniform(next(chain), (n_sys,))
+            accept = log_p_ratio > jnp.log(accept_rand)
 
             # Apply patches
             new_state = patch(state, accept)
