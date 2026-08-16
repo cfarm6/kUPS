@@ -119,16 +119,25 @@ def _particles_from_atoms(
         _L = np.asarray(L)
         if np.allclose(_L, np.diag(np.diag(_L))):
             frame_cls = OrthogonalFrame
-    # f32 host arrays: the tt device materializes f64 device tensors as bf16
-    # (21.04 -> 21.0 — #85 family) and jnp.diagonal on the device returns the
-    # diagonal bf16-quantized (wayfinder #102); casting after creation cannot
-    # recover the lost mantissa. Construct the frame from host f32 numpy so
-    # the transfer is exact.
-    L32 = np.asarray(L, dtype=np.float32)
-    if frame_cls is OrthogonalFrame:
-        cell = Cell.from_pbc(OrthogonalFrame(jnp.asarray(np.diag(L32))), pbc)
+    if jax.default_backend() == "tt":
+        # f32 host arrays: the tt device materializes f64 device tensors as bf16
+        # (21.04 -> 21.0 — #85 family) and jnp.diagonal on the device returns the
+        # diagonal bf16-quantized (wayfinder #102); casting after creation cannot
+        # recover the lost mantissa. Construct the frame from host f32 numpy so
+        # the transfer is exact.
+        L32 = np.asarray(L, dtype=np.float32)
+        if frame_cls is OrthogonalFrame:
+            cell = Cell.from_pbc(OrthogonalFrame(jnp.asarray(np.diag(L32))), pbc)
+        else:
+            cell = Cell.from_pbc(frame_cls.from_matrix(L32), pbc)
     else:
-        cell = Cell.from_pbc(frame_cls.from_matrix(L32), pbc)
+        # CPU/other backends keep the f64 host cell so the reference
+        # observables stay exact (volume 21.04^3 = 9314.020864, SEM ~0) —
+        # wayfinder #47: the unconditional f32 cast (introduced with #102)
+        # leaked the tt boundary downcast into the CPU reference (volume f32
+        # 9314.02246, f32-reduction SEM 3.27e-5) and failed the 10-SEM band
+        # on a 1.7e-7-relative representation difference.
+        cell = Cell.from_pbc(frame_cls.from_matrix(L), pbc)
     positions = tt_safe_asarray(uc_transform(np.asarray(atoms.positions)))
     masses = tt_safe_asarray(atoms.get_masses())
     atomic_numbers = tt_safe_asarray(atoms.get_atomic_numbers())
