@@ -458,6 +458,22 @@ def init_state(key: Array, config: Config) -> MCMCState:
         system,
         tree_map(jnp.maximum, lj_params.cutoff, ewald_params.cutoff),
     )
+    if jax.default_backend() == "tt":
+        # tt port (wayfinder #106): the buffer-inflated system count sizes the
+        # static candidate tables (avg_candidates x query size) ~13x over the
+        # realized pair counts, and the tt cumsum op's static DRAM alloc scales
+        # with that cap (13.5 GB at avg 2048 x 1609 queries -> OOM at init).
+        # Bound the estimate per query like the #71 max_adsorbates cap; the
+        # LensCapacity growth path still self-heals if a run exceeds it. CPU
+        # keeps the full estimate to preserve reference runs.
+        neighborlist_params = UniversalNeighborlistParameters(
+            avg_edges=neighborlist_params.avg_edges,
+            avg_candidates=min(neighborlist_params.avg_candidates, 512),
+            avg_image_candidates=min(
+                neighborlist_params.avg_image_candidates, 512
+            ),
+            cells=neighborlist_params.cells,
+        )
     if blocking_spheres.radii.shape[0] > 0:
         # Systems without spheres have no radius to size from, so use the batch-wide max.
         max_radius = Table((SystemId(0),), blocking_spheres.radii.max(keepdims=True))
