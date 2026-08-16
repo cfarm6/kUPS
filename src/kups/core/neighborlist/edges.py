@@ -89,7 +89,13 @@ class Edges[Degree: int](Sliceable):
     def __post_init__(self) -> None:
         # Resolve the underlying array for validation
         raw = self.indices.indices if isinstance(self.indices, Index) else self.indices
-        if raw.ndim != 2 or raw.shape[1] != self.shifts.shape[1] + 1:
+        # Degree consistency: pairs/angles carry Degree = shifts + 1; the
+        # degree-0 point-cloud path (EmptyNeighborList, init probes) carries
+        # (n, 0) indices with (n, 0, 3) shifts — both empty until populated.
+        if raw.ndim != 2 or not (
+            raw.shape[1] == self.shifts.shape[1] + 1
+            or (raw.shape[1] == 0 and self.shifts.shape[1] == 0)
+        ):
             raise ValueError(
                 "Edges indices and shifts must be degree-consistent: "
                 f"got indices {raw.shape} and shifts {self.shifts.shape}."
