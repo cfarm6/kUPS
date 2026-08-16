@@ -1,0 +1,32 @@
+# wayfinder #52 — MD NVE LJ argon, semi-periodic slab row.
+# 50-atom Ar 2-layer slab from argon_slab.xyz (xyz header pbc="T T F",
+# cell 25x25x50): periodic x,y; vacuum z. Exercises per-axis wrap + MIC.
+# Same physics as md_nve_lj_argon.yaml (verlet, T=50, cutoff 10) minus
+# full periodicity: slab mask, wrap/MIC along x,y only.
+inp_files:
+  - ../host/argon_slab.xyz
+
+run:
+  out_file: ../../md_nve_lj_argon_slab_ref.h5
+  num_warmup_steps: 10_000
+  num_steps: 20_000
+  seed: 42
+
+md:
+  temperature: 50.0
+  time_step: 0.1
+  friction_coefficient: 0.0
+  thermostat_time_constant: 1.0e10
+  target_pressure: 1.0
+  pressure_coupling_time: 1.0e10
+  compressibility: 4.5e-5
+  minimum_scale_factor: 1.0
+  integrator: verlet
+  initialize_momenta: true
+
+potential:
+  backend: lj
+  cutoff: 10.0
+  mixing_rule: lorentz_berthelot
+  parameters:
+    Ar: [3.405, 0.01032356174398622]
