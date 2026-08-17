@@ -656,12 +656,13 @@ def insert_random_motif(
     n_motif_particles = len(motifs)
     chain = key_chain(key)
     if motif_uniform is None:
-        # tt port (wayfinder #92): host-precomputed motif selection.
         selected_motifs = jax.random.choice(
             next(chain), jnp.arange(n_motifs), shape=(n_sys,)
         )
     else:
-        selected_motifs = (motif_uniform * n_motifs).astype(jnp.int32)
+        selected_motifs = (motif_uniform * n_motifs).astype(
+            motifs.data.motif.indices.dtype
+        )
     ins_system_ids, particle_idx = subselect(
         selected_motifs,
         motifs.data.motif.indices,
@@ -784,7 +785,9 @@ def delete_random_motif(
         # tt port (wayfinder #92): host-precomputed motif selection.
         motifs_to_delete = jax.random.choice(next(chain), n_motifs, shape=(n_sys,))
     else:
-        motifs_to_delete = (motif_uniform * n_motifs).astype(jnp.int32)
+        motifs_to_delete = (motif_uniform * n_motifs).astype(
+            motifs.data.motif.indices.dtype
+        )
     # Mark groups whose label matches selected motif and belong to correct system
     possible_group_ids = jnp.where(
         groups.data.motif.indices == motifs_to_delete[groups.data.system.indices],
