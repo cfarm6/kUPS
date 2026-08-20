@@ -309,14 +309,15 @@ def _global_tail_correction_common(
     system_ids = inp.graph.particles.data.system.indices
     species_ids = inp.graph.particles.data.labels.indices_in(inp.parameters.labels)
     group_index = getattr(inp.graph.particles.data, "group", None)
+    counts_add = 1
     if jax.default_backend() == "tt" and group_index is not None:
-        occ = group_index.valid_mask
-        system_ids = system_ids[occ]
-        species_ids = species_ids[occ]
+        # tt port (wayfinder #141): count occupied MCMC buffer slots only.
+        # Boolean slice is non-concrete under JAX tracing — mask the scatter add.
+        counts_add = group_index.valid_mask.astype(int)
     counts = (
         jnp.zeros((n_graphs, n_species), dtype=int)
         .at[system_ids, species_ids]
-        .add(1, mode="drop")
+        .add(counts_add, mode="drop")
     )
     volume = inp.graph.systems.data.cell.volume[:, None, None]
     density = (counts[:, :, None] * counts[:, None, :]) / volume
