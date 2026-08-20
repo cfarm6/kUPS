@@ -180,7 +180,15 @@ def lennard_jones_edge_energy(inp: LennardJonesInput) -> Array:
     edge_energy = 4 * epsilon * (c6**2 - c6)
     batch = graph.edge_batch_mask.indices
     mask = r2 < jnp.pow(inp.parameters.cutoff.data, 2)[batch]
-    return edge_energy * mask
+    edge_energy = edge_energy * mask
+    group_index = getattr(inp.graph.particles.data, "group", None)
+    if jax.default_backend() == "tt" and group_index is not None:
+        # tt port (wayfinder #141): mask pair edges touching unoccupied MCMC
+        # buffer slots (OOB group); flat sigma/epsilon gather otherwise reads garbage.
+        occ = group_index.valid_mask
+        idx = graph.edges.indices.indices
+        edge_energy = edge_energy * (occ[idx[:, 0]] & occ[idx[:, 1]])
+    return edge_energy
 
 
 def lennard_jones_energy(
@@ -300,6 +308,11 @@ def _global_tail_correction_common(
     n_graphs = inp.graph.batch_size
     system_ids = inp.graph.particles.data.system.indices
     species_ids = inp.graph.particles.data.labels.indices_in(inp.parameters.labels)
+    group_index = getattr(inp.graph.particles.data, "group", None)
+    if jax.default_backend() == "tt" and group_index is not None:
+        occ = group_index.valid_mask
+        system_ids = system_ids[occ]
+        species_ids = species_ids[occ]
     counts = (
         jnp.zeros((n_graphs, n_species), dtype=int)
         .at[system_ids, species_ids]
