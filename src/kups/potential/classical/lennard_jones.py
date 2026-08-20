@@ -182,13 +182,20 @@ def lennard_jones_edge_energy(inp: LennardJonesInput) -> Array:
     mask = r2 < jnp.pow(inp.parameters.cutoff.data, 2)[batch]
     edge_energy = edge_energy * mask
     if jax.default_backend() == "tt":
-        # tt port (wayfinder #143): mask edges touching unoccupied MCMC buffer
-        # slots. #141 used group.valid_mask but MC Buffered occupation follows
-        # system.valid_mask — host adsorbates occupied with OOB group; buffer
-        # ghosts unoccupied. Flat sigma/epsilon gather otherwise reads garbage.
-        occ = inp.graph.particles.data.system.valid_mask
-        idx = graph.edges.indices.indices
-        edge_energy = edge_energy * (occ[idx[:, 0]] & occ[idx[:, 1]])
+        # tt port (wayfinder #143/#146): mask unoccupied MCMC buffer slots.
+        # #141 used group.valid_mask; occupation follows system.valid_mask.
+        # Unsafe occ[idx] gather on TT (#145); use fill-gather like #75/#107.
+        edge_idx = graph.edges.indices
+        occ = graph.particles.occupation
+        end0 = edge_idx[:, 0].indices
+        end1 = edge_idx[:, 1].indices
+        both_occ = (
+            occ.at[end0].get(mode="fill", fill_value=False)
+            & occ.at[end1].get(mode="fill", fill_value=False)
+            & edge_idx.valid_mask[:, 0]
+            & edge_idx.valid_mask[:, 1]
+        )
+        edge_energy = edge_energy * both_occ
     return edge_energy
 
 
