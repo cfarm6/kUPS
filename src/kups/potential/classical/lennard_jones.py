@@ -181,11 +181,12 @@ def lennard_jones_edge_energy(inp: LennardJonesInput) -> Array:
     batch = graph.edge_batch_mask.indices
     mask = r2 < jnp.pow(inp.parameters.cutoff.data, 2)[batch]
     edge_energy = edge_energy * mask
-    group_index = getattr(inp.graph.particles.data, "group", None)
-    if jax.default_backend() == "tt" and group_index is not None:
-        # tt port (wayfinder #141): mask pair edges touching unoccupied MCMC
-        # buffer slots (OOB group); flat sigma/epsilon gather otherwise reads garbage.
-        occ = group_index.valid_mask
+    if jax.default_backend() == "tt":
+        # tt port (wayfinder #143): mask edges touching unoccupied MCMC buffer
+        # slots. #141 used group.valid_mask but MC Buffered occupation follows
+        # system.valid_mask — host adsorbates occupied with OOB group; buffer
+        # ghosts unoccupied. Flat sigma/epsilon gather otherwise reads garbage.
+        occ = inp.graph.particles.data.system.valid_mask
         idx = graph.edges.indices.indices
         edge_energy = edge_energy * (occ[idx[:, 0]] & occ[idx[:, 1]])
     return edge_energy
@@ -308,12 +309,12 @@ def _global_tail_correction_common(
     n_graphs = inp.graph.batch_size
     system_ids = inp.graph.particles.data.system.indices
     species_ids = inp.graph.particles.data.labels.indices_in(inp.parameters.labels)
-    group_index = getattr(inp.graph.particles.data, "group", None)
     counts_add = 1
-    if jax.default_backend() == "tt" and group_index is not None:
-        # tt port (wayfinder #141): count occupied MCMC buffer slots only.
-        # Boolean slice is non-concrete under JAX tracing — mask the scatter add.
-        counts_add = group_index.valid_mask.astype(int)
+    if jax.default_backend() == "tt":
+        # tt port (wayfinder #143): count occupied MCMC buffer slots only
+        # (system.valid_mask / Buffered.occupation). Boolean slice is
+        # non-concrete under JAX tracing — mask the scatter add.
+        counts_add = inp.graph.particles.data.system.valid_mask.astype(int)
     counts = (
         jnp.zeros((n_graphs, n_species), dtype=int)
         .at[system_ids, species_ids]
