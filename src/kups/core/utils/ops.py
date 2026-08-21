@@ -113,6 +113,21 @@ def use_host_rng_draws() -> bool:
     return jax.default_backend() == "tt"
 
 
+def take_col(x: Array, k: int, *, axis: int = -1) -> Array:
+    """Extract column ``k`` along ``axis`` (drop-dim), slice-free on tt.
+
+    tt port (wayfinder #107): a static ``x[..., k]`` slice of the cap-height
+    MC candidate tables lowers to ``ttnn.slice`` whose output CB is the full
+    tensor on a single core (an 823 808-row i64 column = 6.6 MB > 1.5 MB L1,
+    pjrt INTERNAL at init). ``jnp.take`` lowers to ``ttir.gather``
+    (DRAM-pipelined, the #8680/#75 path) and runs at full cap on device
+    (probe-verified). Non-tt backends keep the slice, bit-identical.
+    """
+    if jax.default_backend() == "tt":
+        return jnp.take(x, k, axis=axis)
+    return x[tuple(slice(None) if d != axis % x.ndim else k for d in range(x.ndim))]
+
+
 def select_n(which: Array, *cands: Array) -> Array:
     """Like ``jax.lax.select_n`` but short-circuits when all candidates are identical.
 
@@ -130,4 +145,9 @@ def select_n(which: Array, *cands: Array) -> Array:
     """
     if all(c is cands[0] for c in cands[1:]):
         return cands[0]
+    if use_mask_selection():
+        # tt port (wayfinder #149): move-branch merge mixes f32 state leaves with
+        # f64 literals; promote before select_n (lax.select rejects mixed dtypes).
+        dtype = jnp.result_type(*[jnp.asarray(c) for c in cands])
+        cands = tuple(jnp.asarray(c, dtype=dtype) for c in cands)
     return jax.lax.select_n(which, *cands)

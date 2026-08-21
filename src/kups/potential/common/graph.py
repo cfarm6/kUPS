@@ -31,6 +31,7 @@ from typing import (
     runtime_checkable,
 )
 
+import jax
 import jax.numpy as jnp
 from jax import Array
 
@@ -327,6 +328,16 @@ class LocalGraphSumComposer[
         params = self.parameter_view(state)
 
         if patch is None:
+            graph = self.graph_constructor(state, None)
+            return Sum(Summand(GraphPotentialInput(params, graph)))
+
+        if jax.default_backend() == "tt":
+            # tt port (wayfinder #149): incremental old/new subgraph +
+            # add_previous_total re-injects ~-1.346 eV buffer-ghost LJ bias
+            # cleared at init_prop (#146). Full-graph eval on patched state
+            # matches init_prop mask path until subgraph incremental is fixed.
+            state = patch(state, Table((SystemId(0),), jnp.ones((1,), dtype=jnp.bool_)))
+            params = self.parameter_view(state)
             graph = self.graph_constructor(state, None)
             return Sum(Summand(GraphPotentialInput(params, graph)))
 
