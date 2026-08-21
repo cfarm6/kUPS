@@ -27,6 +27,7 @@ from kups.core.typing import (
     SystemId,
 )
 from kups.core.utils.jax import dataclass, pairwise_sum
+from kups.core.utils.ops import take_col, use_mask_selection
 
 
 @jax.custom_vjp
@@ -39,13 +40,13 @@ def _edge_dvec(pos: Array, idx: Array, abs_shifts: Array) -> Array:
     like the plain Table gather).
     """
 
-    return (pos[idx[:, 1]] - pos[idx[:, 0]])[:, None, :] + abs_shifts
+    return (pos[take_col(idx, 1)] - pos[take_col(idx, 0)])[:, None, :] + abs_shifts
 
 
 def _edge_dvec_fwd(pos: Array, idx: Array, abs_shifts: Array) -> tuple[Array, tuple]:
-    out = (pos[idx[:, 1]] - pos[idx[:, 0]])[:, None, :] + abs_shifts
+    out = (pos[take_col(idx, 1)] - pos[take_col(idx, 0)])[:, None, :] + abs_shifts
     n_atoms = pos.shape[0]
-    valid = (idx[:, 0] < n_atoms) & (idx[:, 1] < n_atoms)
+    valid = (take_col(idx, 0) < n_atoms) & (take_col(idx, 1) < n_atoms)
     return out, (idx, valid, n_atoms)
 
 
@@ -53,7 +54,7 @@ def _edge_dvec_bwd(
     res: tuple, ct: Array
 ) -> tuple[Array, None, Array]:
     idx, valid, n_atoms = res
-    ct2 = ct[:, 0]  # (n_edges, 3)
+    ct2 = take_col(ct, 0, axis=-2)  # (n_edges, 3)
     # Mask only the position accumulation: OOB padding rows have no position
     # incidence, and a NaN cotangent there must not poison the matmul. The
     # shifts cotangent is the raw ct (dropped rows carry zero from the LJ
@@ -61,8 +62,8 @@ def _edge_dvec_bwd(
     # semantics.
     ct_pos = jnp.where(valid[:, None], ct2, 0.0)
     signed = (
-        (idx[:, 1, None] == jnp.arange(n_atoms)).astype(jnp.float32)
-        - (idx[:, 0, None] == jnp.arange(n_atoms)).astype(jnp.float32)
+        (take_col(idx, 1)[:, None] == jnp.arange(n_atoms)).astype(jnp.float32)
+        - (take_col(idx, 0)[:, None] == jnp.arange(n_atoms)).astype(jnp.float32)
     )
     pos_grad = signed.T @ ct_pos  # (n_atoms, 3)
     return pos_grad, None, ct
@@ -119,21 +120,25 @@ class Edges[Degree: int](Sliceable):
             Array of shape `(n_edges, Degree-1, 3)` containing difference vectors.
         """
         shifts = self.absolute_shifts(particles, systems)
-        if (
-            jax.default_backend() == "tt"
-            and self.degree == 2
-            and isinstance(systems.data.cell.frame, OrthogonalFrame)
-        ):
-            # tt port (wayfinder #102): the plain VJP of the position gather
+        if jax.default_backend() == "tt" and self.degree == 2:
+            # tt port (wayfinder #102/#152): the plain VJP of the position gather
             # lowers to a Tensix scatter kernel whose float accumulation is
             # f16-Dst (fp32_dest_acc_en=false) — per-atom forces come out ~26%
             # low (measured). _edge_dvec keeps the exact forward (energy
             # unchanged) and accumulates the position cotangent with a signed
-            # one-hot incidence matmul (TF32-class, ~0.1% error). Other
-            # backends keep the plain autograd; non-orthogonal tt frames keep
-            # the plain path (already TF32-limited there).
+            # one-hot incidence matmul (TF32-class, ~0.1% error). Extended to
+            # all pair edges on tt (#152): MC NVT uses TriclinicFrame even for
+            # diagonal cells; the OrthogonalFrame-only gate left guest-stress
+            # off-diagonals on the corrupt gather/scatter path.
             return _edge_dvec(particles.data.positions, self.indices.indices, shifts)
         pos = particles[self.indices].positions
+        if use_mask_selection():
+            # tt port (wayfinder #107): keep-dim static slices of the
+            # cap-height edge tables lower to full-tensor ttnn.slice CBs;
+            # take lowers to ttir.gather (DRAM-pipelined).
+            return jnp.take(pos, jnp.array([1]), axis=-2) - jnp.take(
+                pos, jnp.array([0]), axis=-2
+            ) + shifts
         return pos[:, 1:] - pos[:, :1] + shifts
 
     def absolute_shifts(
@@ -153,7 +158,7 @@ class Edges[Degree: int](Sliceable):
             Array of shape `(n_edges, Degree-1, 3)` containing absolute shift vectors.
         """
         lattice = systems.map_data(lambda x: x.cell.materialize())
-        sys_idx = particles[self.indices[:, 0]].system
+        sys_idx = particles[self.indices._take_col(0)].system
         if jax.default_backend() == "tt":
             # tt port (wayfinder #103): every gather on tt (Table or raw-array,
             # ttir.embedding or ttir.gather) bf16-casts its f32 operand, so

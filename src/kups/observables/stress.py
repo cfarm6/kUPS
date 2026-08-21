@@ -28,7 +28,29 @@ from jax import Array
 
 from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data import Index, Table
-from kups.core.utils.jax import pairwise_sum
+from kups.core.lens import bind
+from kups.core.typing import (
+    GroupId,
+    HasCell,
+    HasGroupIndex,
+    HasPositions,
+    HasSystemIndex,
+    ParticleId,
+    SystemId,
+)
+from kups.core.utils.jax import pairwise_sum, tree_map
+
+
+def _exact_segment_sum(segment_ids, values, num_segments):
+    """``segment_sum`` with an exact reduction on tt (see :func:`pairwise_sum`)."""
+    if jax.default_backend() != "tt":
+        return jax.ops.segment_sum(values, segment_ids, num_segments)
+    n = num_segments
+    mask = segment_ids[:, None] == jnp.arange(n)[None, :]
+    if values.ndim > 1:
+        mask = mask[..., None]
+    masked = jnp.where(mask, values[:, None, ...], 0.0)
+    return pairwise_sum(masked)
 
 
 def _exact_sum_over(index: Index[SystemId], array: Array) -> Table[SystemId, Array]:
@@ -46,17 +68,6 @@ def _exact_sum_over(index: Index[SystemId], array: Array) -> Table[SystemId, Arr
     )
     masked = jnp.where(mask, array[:, None], 0.0)  # (rows, n, ...)
     return Table(index.keys, pairwise_sum(masked), _cls=index._cls)
-from kups.core.lens import bind
-from kups.core.typing import (
-    GroupId,
-    HasCell,
-    HasGroupIndex,
-    HasPositions,
-    HasSystemIndex,
-    ParticleId,
-    SystemId,
-)
-from kups.core.utils.jax import tree_map
 
 
 @runtime_checkable
@@ -103,6 +114,17 @@ def _lower_sym_cell_virial(vectors: Array, vector_gradients: Array) -> Array:
     ``g`` are not parameters and are not stored). The upper triangle is not
     materialized; the final position-plus-cell virial is symmetrized later.
     """
+    if jax.default_backend() == "tt":
+        # tt port (wayfinder #152): ``vectors.mT @ vector_gradients`` lowers to a
+        # Tensix matmul with TF32-class Dst accumulation; off-diagonal h^T·∂U/∂h
+        # entries (σ_xz / σ_yz) pick up ~1e-6 guest-stress bias. Contract with
+        # exact f32 elementwise multiply + pairwise sum over the lattice axis.
+        term = vectors[..., :, :, None] * vector_gradients[..., :, None, :]
+        k_axis = term.ndim - 3
+        moved = jnp.moveaxis(term, k_axis, 0)
+        flat = moved.reshape(moved.shape[0], -1)
+        contracted = pairwise_sum(flat).reshape(moved.shape[1:])
+        return jnp.tril(contracted)
     return jnp.tril(vectors.mT @ vector_gradients)
 
 
@@ -155,7 +177,7 @@ def _molecular_stress_via_virial_theorem(
     )
     offsets = positions[ref_idx]
     rel = batched_cells.wrap(positions - offsets[group.indices])
-    com = jax.ops.segment_sum(rel, group.indices, num_groups)
+    com = _exact_segment_sum(group.indices, rel, num_groups)
     counts = jnp.bincount(group.indices, length=num_groups)[:, None]
     com = com / jnp.maximum(counts, 1) + offsets
     com = group_cells.wrap(com)
