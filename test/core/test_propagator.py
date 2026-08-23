@@ -40,7 +40,7 @@ from kups.core.schedule import (
     PropertyScheduler,
 )
 from kups.core.typing import SystemId
-from kups.core.utils.jax import dataclass, field
+from kups.core.utils.jax import dataclass, field, key_chain
 
 
 # Test fixtures and helpers
@@ -750,6 +750,24 @@ class TestLoopPropagator:
 
         assert result.value.value == 4.0  # 1 + 3
         assert len(result.assertions) > 0
+
+    def test_loop_propagator_matches_eager_key_chain(self, test_state, rng_key):
+        """Jitted while_loop must use the same keys as eager key_chain unroll."""
+
+        def key_sensitive_prop(key: Array, state: ExampleState) -> ExampleState:
+            draw = jax.random.uniform(key)
+            return bind(state).focus(lambda s: s.value).set(state.value + draw)
+
+        repetitions = 50
+        loop = LoopPropagator(propagator=key_sensitive_prop, repetitions=repetitions)
+        jitted = jax.jit(loop)(rng_key, test_state)
+
+        chain = key_chain(rng_key)
+        eager = test_state
+        for _ in range(repetitions):
+            eager = key_sensitive_prop(next(chain), eager)
+
+        npt.assert_allclose(jitted.value, eager.value, rtol=0, atol=0)
 
 
 class TestExtendedPropagatorIntegration:

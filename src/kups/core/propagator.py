@@ -550,25 +550,28 @@ class LoopPropagator[State](Propagator[State]):
     repetitions: View[State, Array] | int = field(static=True)
 
     def __call__(self, key: Array, state: State) -> State:
-        chain = key_chain(key)
         if isinstance(self.repetitions, int):
             repetitions = jnp.array(self.repetitions)
         else:
             repetitions = self.repetitions(state)
 
-        def body(carry: tuple[Array, Array, State]):
-            i, key, prev_state = carry
-            state = prev_state
-            key, subkey = jax.random.split(key)
-            state = self.propagator(subkey, state)
-            return i + 1, key, state
+        # Match key_chain(key): fold_in(split(key, 1)[0], i) per iteration.
+        # jax.random.split in the carry diverges from eager unroll and from
+        # every other propagator that consumes keys via key_chain.
+        base_key = jax.random.split(key, 1)[0]
 
-        def cond(carry: tuple[Array, Array, State]) -> Array:
-            i, _, _ = carry
+        def body(carry: tuple[Array, State]):
+            i, state = carry
+            step_key = jax.random.fold_in(base_key, i)
+            state = self.propagator(step_key, state)
+            return i + 1, state
+
+        def cond(carry: tuple[Array, State]) -> Array:
+            i, _ = carry
             return i < repetitions
 
-        init = (jnp.zeros((), dtype=int), next(chain), state)
-        _, _, state = jax.lax.while_loop(cond, body, init)
+        init = (jnp.zeros((), dtype=int), state)
+        _, state = jax.lax.while_loop(cond, body, init)
         return state
 
 
