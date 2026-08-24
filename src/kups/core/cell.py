@@ -588,6 +588,19 @@ class TriclinicFrame(LinearFrame, Sliceable):
     def __mul__(self, other: Array | float | int) -> Self:
         return type(self)(self.tril * jnp.asarray(other)[..., None])
 
+    @override
+    def materialize(self) -> MaterializedFrame:
+        if jax.default_backend() == "tt":
+            # tt port (wayfinder #163): the materialized frame's scalar
+            # ``volume`` leaf (shape (B,)) breaks the exact per-edge frame
+            # select in Edges.absolute_shifts (#103) — its loop assumes every
+            # Array leaf has a trailing parameter axis — and Batched then
+            # rejects the mixed (1, ...) / (n_edges, 1) leaves. Returning the
+            # unmaterialized frame keeps the single tril leaf; numerics are
+            # unchanged (to_real is the same matmul either way).
+            return self
+        return super().materialize()
+
 
 def _broadcast_cell_factor(cell_factor: float | Array, like: Array) -> Array:
     """Align a scalar / per-system ``cell_factor`` with ``like``'s axes.
