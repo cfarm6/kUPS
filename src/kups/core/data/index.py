@@ -32,10 +32,12 @@ from kups.core.utils.jax import (
     is_traced,
     isin,
     no_jax_tracing,
+    pairwise_sum,
     skip_post_init_if_disabled,
     tt_safe_asarray,
 )
 from kups.core.utils.subselect import subselect
+from kups.core.utils.ops import take_col
 
 type PyTree = Any
 
@@ -242,6 +244,23 @@ class Index[Key: SupportsSorting]:
     def __getitem__(self, item: Any) -> Index[Key]:
         """Index into the underlying integer array, preserving keys."""
         return self._forward_to_data("__getitem__", item)
+
+    def _take_col(self, k: int) -> Index[Key]:
+        """Last-axis column extraction preserving keys.
+
+        tt port (wayfinder #107): ``indices[:, k]`` on the cap-height
+        candidate tables lowers to a full-tensor ``ttnn.slice`` CB on one core
+        (823 808-row i64 column = 6.6 MB > 1.5 MB L1); ``jnp.take`` lowers to ``ttir.gather`` (DRAM-pipelined) and runs at
+        full cap on device. Identical to ``self[:, k]`` on non-tt backends.
+        """
+        if jax.default_backend() == "tt":
+            return Index(
+                self.keys,
+                take_col(self.indices, k),
+                self.max_count,
+                _cls=self.cls,
+            )
+        return self[:, k]
 
     @property
     def num_labels(self) -> int:

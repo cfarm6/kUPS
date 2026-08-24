@@ -52,6 +52,9 @@ class _Log:
 
     def log(self, state: _State, step: int) -> None:
         self.values.append(float(state.value))
+    def log_batch(self, data: Array, start_step: int) -> None:
+        del start_step
+        self.values.extend(float(value) for value in data)
 
 
 def test_block_advances_block_size_steps():
@@ -70,8 +73,23 @@ def test_blocked_matches_per_step_final_state():
     blk = run_simulation_cycles(
         key, make_cycle_function(LoopPropagator(_stepper, 5)), _state(), 2, _Log()
     )
+
+
     npt.assert_array_equal(per.step, blk.step)
     npt.assert_allclose(per.value, blk.value)
+def test_batched_logging_preserves_frames():
+    log = _Log()
+    out = run_simulation_cycles(
+        jax.random.key(0),
+        make_cycle_function(_stepper),
+        _state(),
+        10,
+        log,
+        batch_size=3,
+        batch_capture=lambda state: state.value,
+    )
+    npt.assert_array_equal(out.step, jnp.array([10]))
+    npt.assert_allclose(log.values, list(map(float, range(1, 11))))
 
 
 def test_saves_last_frame_of_each_block():

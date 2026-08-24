@@ -114,19 +114,7 @@ def _lower_sym_cell_virial(vectors: Array, vector_gradients: Array) -> Array:
     ``g`` are not parameters and are not stored). The upper triangle is not
     materialized; the final position-plus-cell virial is symmetrized later.
     """
-    if jax.default_backend() == "tt":
-        # tt port (wayfinder #152): ``vectors.mT @ vector_gradients`` lowers to a
-        # Tensix matmul with TF32-class Dst accumulation; off-diagonal h^T·∂U/∂h
-        # entries (σ_xz / σ_yz) pick up ~1e-6 guest-stress bias. Contract with
-        # exact f32 elementwise multiply + pairwise sum over the lattice axis.
-        term = vectors[..., :, :, None] * vector_gradients[..., :, None, :]
-        k_axis = term.ndim - 3
-        moved = jnp.moveaxis(term, k_axis, 0)
-        flat = moved.reshape(moved.shape[0], -1)
-        contracted = pairwise_sum(flat).reshape(moved.shape[1:])
-        return jnp.tril(contracted)
     return jnp.tril(vectors.mT @ vector_gradients)
-
 
 def _periodic_mask(cell: Cell[AnyPeriodicity]) -> Array:
     """Outer product of the per-axis periodicity flags, shape ``(3, 3)``.

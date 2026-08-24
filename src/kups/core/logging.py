@@ -9,6 +9,7 @@ import logging
 from pathlib import Path
 from typing import Any, Protocol, Self
 
+import jax
 import jax.profiler
 import tqdm.auto as tqdm
 
@@ -26,7 +27,7 @@ class Logger[State](Protocol):
     def __enter__(self) -> Self: ...
     def __exit__(self, *exc: object) -> None: ...
     def log(self, state: State, step: int) -> None: ...
-
+    def log_batch(self, data: Any, start_step: int) -> None: ...
 
 class CompositeLogger[State]:
     """Combines multiple loggers into one.
@@ -51,6 +52,10 @@ class CompositeLogger[State]:
         for logger in self._loggers:
             logger.log(state, step)
 
+    def log_batch(self, data: Any, start_step: int) -> None:
+        for logger in self._loggers:
+            logger.log_batch(data, start_step)
+
 
 class NullLogger[State]:
     """No-op logger. Useful for warmup or when logging is disabled."""
@@ -62,6 +67,9 @@ class NullLogger[State]:
         pass
 
     def log(self, state: State, step: int) -> None:
+        pass
+
+    def log_batch(self, data: Any, start_step: int) -> None:
         pass
 
 
@@ -97,6 +105,12 @@ class TqdmLogger[State]:
             refreshed = self._pbar.update(1)
             if refreshed and self._postfix is not None:
                 self._pbar.set_postfix(self._postfix(state))
+    def log_batch(self, data: Any, start_step: int) -> None:
+        if self._pbar is not None:
+            leaves = jax.tree.leaves(data)
+            count = int(leaves[0].shape[0]) if leaves else 0
+            self._pbar.update(count)
+        del start_step
 
 
 class ProfileLogger[State]:
@@ -139,6 +153,11 @@ class ProfileLogger[State]:
             self._start_trace()
         elif step == self._end_step - 1:
             self._stop_trace()
+    def log_batch(self, data: Any, start_step: int) -> None:
+        leaves = jax.tree.leaves(data)
+        count = int(leaves[0].shape[0]) if leaves else 0
+        for step in range(start_step, start_step + count):
+            self.log(None, step)  # type: ignore[arg-type]
 
     def _start_trace(self) -> None:
         if self._trace is not None:

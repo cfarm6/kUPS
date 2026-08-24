@@ -38,6 +38,7 @@ from kups.core.typing import (
     SystemId,
 )
 from kups.core.utils.jax import dataclass, field, skip_post_init_if_disabled
+from kups.core.utils.ops import take_col
 
 
 class NeighborListPoints(
@@ -134,14 +135,15 @@ class CandidateBatch[D: int]:
     @property
     def key_idx(self) -> Index[ParticleId]:
         """Pair-specific: key-side index of shape ``(n,)``. Only meaningful for ``D == 2``."""
-        return self.edges.indices[:, 0]
+        return self.edges.indices._take_col(0)
 
     @property
     def query_idx(self) -> Index[ParticleId]:
         """Pair-specific: query-side index of shape ``(n,)``. Only meaningful for ``D == 2``."""
+        idx = self.edges.indices
         return Index(
-            self.query_keys or self.edges.indices.keys,
-            self.edges.indices.indices[:, 1],
+            self.query_keys or idx.keys,
+            take_col(idx.indices, 1),
         )
 
 

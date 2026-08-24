@@ -41,6 +41,7 @@ from kups.core.neighborlist.types import (
 )
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, jit
+from kups.core.utils.ops import take_col
 
 
 @dataclass
@@ -69,8 +70,8 @@ class PrecomputedEdgesSelector:
             indices = self.candidates.indices.indices
             query = ctx.edge_query_table
             raw_candidates = Candidates(
-                key_idx=Index(ctx.keys.keys, indices[:, 0]),
-                query_idx=Index(query.keys, indices[:, 1]),
+                key_idx=Index(ctx.keys.keys, take_col(indices, 0)),
+                query_idx=Index(query.keys, take_col(indices, 1)),
             )
             return make_batch_with_mic(raw_candidates, ctx.keys, query, ctx.systems)
         indices = self.candidates.indices.indices

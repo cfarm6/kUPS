@@ -130,7 +130,7 @@ class Config(BaseModel):
     max_num_adsorbates: int
 
 
-@dataclass
+@dataclass(kw_only=True)
 class WidomState(MCMCState):
     """State for the Widom test-particle simulation.
 
@@ -356,16 +356,23 @@ def run(config: Config) -> WidomState:
         next(chain), cycle_fn, state, config.run.num_warmup_cycles
     )
     state = bind(state, lambda x: x.widom_statistics.data).apply(WidomStatistics.reset)
-
     logged_data = make_widom_logged_data(state)
+
+    writer = HDF5StorageWriter(
+        config.run.out_file, logged_data, state, config.run.num_cycles
+    )
     logger = CompositeLogger(
-        HDF5StorageWriter(
-            config.run.out_file, logged_data, state, config.run.num_cycles
-        ),
+        writer,
         TqdmLogger(config.run.num_cycles),
     )
     return run_simulation_cycles(
-        next(chain), cycle_fn, state, config.run.num_cycles, logger
+        next(chain),
+        cycle_fn,
+        state,
+        config.run.num_cycles,
+        logger,
+        batch_size=64 if jax.default_backend() == "tt" else 1,
+        batch_capture=writer.capture_batch,
     )
 
 

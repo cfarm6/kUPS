@@ -41,6 +41,7 @@ from kups.core.neighborlist.types import (
 )
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass, jit
+from kups.core.utils.ops import take_col
 
 
 class IsCellListParams(Protocol):
@@ -145,8 +146,8 @@ def _cell_list_subselect(
             size=len(query_original),
             fill_value=jnp.array([cell_oob, len(queries)]),
         )
-        query_neighborhood_hashes = unique_queries[:, 0]
-        query_original = Index(queries.keys, unique_queries[:, 1])
+        query_neighborhood_hashes = take_col(unique_queries, 0)
+        query_original = Index(queries.keys, take_col(unique_queries, 1))
 
     selection_result = subselect(
         key_hashes,

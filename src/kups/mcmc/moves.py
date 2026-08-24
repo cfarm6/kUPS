@@ -173,7 +173,7 @@ def random_rotate_groups(
     key: Array,
     particles: Table[ParticleId, HasPositionsGroupSystem],
     systems: Table[SystemId, HasCell[AnyPeriodicity]],
-    step_width: Array,
+    step_width: Array | None,
     u: Array | None = None,
 ) -> Array:
     """Rotate molecular groups around their centers of mass.
@@ -182,7 +182,8 @@ def random_rotate_groups(
         key: JAX PRNG key.
         particles: Indexed particles with positions, group, and system indices.
         systems: Indexed systems with cell data.
-        step_width: Rotation step size (0=no rotation, 1=full random rotation).
+        step_width: Rotation step size. ``None`` applies the full random
+            rotation without quaternion exponentiation.
         u: Host-precomputed Shoemake uniforms (``(n_sys, 3)``) on tt (wayfinder
             #92); ``None`` draws on device as before.
 
@@ -195,9 +196,12 @@ def random_rotate_groups(
     chain = key_chain(key)
     n_sys = len(systems)
     if u is None:
-        rotations = Quaternion.random(next(chain), (n_sys,)) ** step_width
+        base_rotation = Quaternion.random(next(chain), (n_sys,))
     else:
-        rotations = Quaternion.from_uniform(u) ** step_width
+        base_rotation = Quaternion.from_uniform(u)
+    rotations = (
+        base_rotation if step_width is None else base_rotation ** step_width
+    )
     group_index = Index(
         tuple(GroupId(i) for i in range(n_sys)),
         system_ids,
@@ -306,7 +310,11 @@ def propose_reinsertion(
     selected_data = particles[selected]
     selected_particles = Table.arange(selected_data, label=ParticleId)
     rotated_positions = random_rotate_groups(
-        next(chain), selected_particles, systems, jnp.ones((n_sys,)), u=reinsertion_u
+        next(chain),
+        selected_particles,
+        systems,
+        None,
+        u=reinsertion_u,
     )
     rotated_particles = (
         bind(selected_particles)

@@ -188,9 +188,18 @@ def run_md[State: IsMdState](
     # trajectory keeps num_steps // block_size frames (block_size=1 = one step per cycle).
     cycle_fn = make_cycle_function(LoopPropagator(propagator, config.block_size))
     num_cycles = config.num_steps // config.block_size
+    writer = HDF5StorageWriter(config.out_file, MDLoggedData(), state, num_cycles)
     logger = CompositeLogger(
         TqdmLogger(num_cycles),
-        HDF5StorageWriter(config.out_file, MDLoggedData(), state, num_cycles),
+        writer,
     )
-    state = run_simulation_cycles(next(chain), cycle_fn, state, num_cycles, logger)
+    state = run_simulation_cycles(
+        next(chain),
+        cycle_fn,
+        state,
+        num_cycles,
+        logger,
+        batch_size=64 if jax.default_backend() == "tt" else 1,
+        batch_capture=writer.capture_batch,
+    )
     return state

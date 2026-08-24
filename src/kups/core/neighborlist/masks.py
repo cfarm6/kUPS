@@ -24,6 +24,7 @@ from kups.core.neighborlist.common import real_distance_sq
 from kups.core.neighborlist.types import CandidateBatch, PipelineContext
 from kups.core.typing import SystemId
 from kups.core.utils.jax import dataclass, isin
+from kups.core.utils.ops import take_col
 
 
 @dataclass
@@ -116,7 +117,7 @@ class DistanceCutoffMask:
         self, batch: CandidateBatch[Literal[2]], ctx: PipelineContext
     ) -> Array:
         cutoffs = Table.broadcast_to(self.cutoffs, ctx.systems)
-        shifts = batch.edges.shifts[:, 0, :]
+        shifts = take_col(batch.edges.shifts, 0, axis=-2)
         frame_table: Table[SystemId, MaterializedFrame] = ctx.systems.map_data(
             lambda s: s.cell.frame.materialize()
         )
@@ -124,8 +125,8 @@ class DistanceCutoffMask:
         frames: MaterializedFrame = frame_table[key_system]
         if ctx.queries is None:
             pair_positions = ctx.keys[batch.edges.indices].positions
-            key_positions = pair_positions[:, 0]
-            query_positions = pair_positions[:, 1]
+            key_positions = take_col(pair_positions, 0, axis=-2)
+            query_positions = take_col(pair_positions, 1, axis=-2)
         else:
             key_positions = ctx.keys[batch.key_idx].positions
             query_positions = ctx.queries[batch.query_idx].positions
@@ -146,7 +147,7 @@ class ExclusionMask:
     ) -> Array:
         if ctx.queries is None:
             edge_excl = ctx.keys[batch.edges.indices].exclusion.indices
-            return (edge_excl[:, 0] != edge_excl[:, 1]) | ~batch.is_minimum_image
+            return (take_col(edge_excl, 0) != take_col(edge_excl, 1)) | ~batch.is_minimum_image
 
         key_excl, query_excl = Index.match(
             ctx.keys[batch.key_idx].exclusion, ctx.queries[batch.query_idx].exclusion

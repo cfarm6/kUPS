@@ -6,11 +6,10 @@
 The tt backend's f64 RNG pipeline is broken under ``jax_enable_x64``
 (``jax.random.uniform`` -> all-inf, ``normal`` -> all-nan, eager and jitted;
 measured 2026-08-16 on the current stack, see #91/#92). The MCMC cycle's
-jitted proposal draws consume device f64 RNG, so every proposal is garbage
-on tt. This module precomputes the per-cycle draws on the host (jax CPU,
-x64 semantics, deterministic from the run seed) and carries them in the
-state -- the donated cycle input -- mirroring the MD chi2 substitution
-(``md/simulation.py::inject_host_chi2_draws``, wayfinder #44).
+jitted proposal draws consume device f64 RNG, so every proposal is garbage on tt.
+This module precomputes the per-cycle draws on the host (jax CPU, x64 semantics),
+narrows them to f32 at the TT boundary, and carries them in the state -- the
+donated cycle input -- mirroring the MD chi2 substitution.
 
 Per-cycle flow (application/mcmc/simulation.py::run_mcmc, tt only):
 
@@ -92,14 +91,14 @@ def draw_rng_bundle(key: Array, state: object, n_steps: int) -> MCMCRngDraws:
     Returns:
         The bundle with ``(n_steps, ...)`` leaves, on CPU.
     """
-    n_sys = state.groups.data.system.counts.shape[0]
+    n_sys = state.groups.data.system.counts.data.shape[0]
     chain = key_chain(key)
 
     def u(*shape) -> Array:
-        return jax.random.uniform(next(chain), shape)
+        return jax.random.uniform(next(chain), shape).astype(jnp.float32)
 
     def n(*shape) -> Array:
-        return jax.random.normal(next(chain), shape)
+        return jax.random.normal(next(chain), shape).astype(jnp.float32)
 
     cpu = jax.devices("cpu")[0]
     with jax.default_device(cpu):

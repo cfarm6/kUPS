@@ -162,6 +162,25 @@ class TestHDF5StorageWriter:
             assert initial["pos"].shape == (3,)
             npt.assert_array_equal(initial["pos"], simple_state.position)
 
+    def test_batched_log_preserves_rows(self, simple_state, temp_file):
+        config = WriterGroupConfig(
+            view=view(lambda s: {"pos": s.position}),
+            logging_frequency=EveryNStep(1),
+        )
+        writer = HDF5StorageWriter(temp_file, config, simple_state, total_steps=5)
+        states = SimpleState(
+            position=jnp.stack([simple_state.position + i for i in range(5)]),
+            velocity=jnp.zeros((5, 1)),
+            energy=0.0,
+        )
+        with writer:
+            writer.log_batch(writer.capture_batch(states), 0)
+
+        with HDF5StorageReader(temp_file) as reader:
+            positions = reader.focus_group("group")[:]["pos"]
+            assert positions.shape == (5, 3)
+            npt.assert_array_equal(positions, states.position)
+
     def test_actual_steps_attr(self, simple_state, temp_file):
         writer = HDF5StorageWriter(
             temp_file,

@@ -12,11 +12,78 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
-from jax import Array
+from jax import Array, core
+from jax.interpreters import mlir
 
 from kups.core.data import Sliceable
 
 from .jax import dataclass, vectorize
+
+import jax.extend.core as jax_core
+
+
+_quaternion_rotate_p = jax_core.Primitive("quaternion_rotate")
+_quaternion_rotate_p.multiple_results = False
+_tt_lowering_registered = False
+
+
+def _rotate_vectors_impl(q: Array, vector: Array) -> Array:
+    """Rotate broadcast-compatible vectors with component arithmetic."""
+    w, x, y, z = jnp.moveaxis(q, -1, 0)
+    vx, vy, vz = jnp.moveaxis(vector, -1, 0)
+    return jnp.stack(
+        [
+            (w * w + x * x - y * y - z * z) * vx
+            + 2 * (x * y - z * w) * vy
+            + 2 * (x * z + y * w) * vz,
+            2 * (x * y + z * w) * vx
+            + (-x * x + y * y - z * z + w * w) * vy
+            + 2 * (y * z - x * w) * vz,
+            2 * (x * z - y * w) * vx
+            + 2 * (y * z + x * w) * vy
+            + (-x * x - y * y + z * z + w * w) * vz,
+        ],
+        axis=-1,
+    )
+
+
+_quaternion_rotate_p.def_impl(_rotate_vectors_impl)
+_quaternion_rotate_p.def_abstract_eval(
+    lambda q, vector: core.ShapedArray(vector.shape, vector.dtype)
+)
+mlir.register_lowering(
+    _quaternion_rotate_p,
+    mlir.lower_fun(_rotate_vectors_impl, multiple_results=False),
+)
+
+
+def _tt_quaternion_rotate_lowering(ctx: object, q: object, vector: object) -> list[object]:
+    result_type = mlir.aval_to_ir_type(ctx.avals_out[0])  # type: ignore[attr-defined]
+    layouts = [
+        list(range(len(aval.shape) - 1, -1, -1))
+        for aval in (*ctx.avals_in, *ctx.avals_out)  # type: ignore[attr-defined]
+    ]
+    return [
+        mlir.custom_call(
+            "tenstorrent.quaternion_rotate",
+            result_types=[result_type],
+            operands=[q, vector],
+            operand_layouts=layouts[:2],
+            result_layouts=layouts[2:],
+        ).result
+    ]
+
+
+def _ensure_tt_quaternion_rotate_lowering() -> None:
+    global _tt_lowering_registered
+    if _tt_lowering_registered or jax.default_backend() != "tt":
+        return
+    mlir.register_lowering(
+        _quaternion_rotate_p,
+        _tt_quaternion_rotate_lowering,
+        platform="tt",
+    )
+    _tt_lowering_registered = True
 
 
 @dataclass
@@ -135,9 +202,6 @@ class Quaternion(Sliceable):
     def __rmatmul__(self, other: object) -> Array:
         """Rotate a 3D vector or batch of vectors by this quaternion.
 
-        Implements the operation ``point @ quaternion`` to apply the rotation
-        represented by the quaternion to one or more 3D points.
-
         Args:
             other: Array of shape ``(..., 3)`` representing 3D point(s).
 
@@ -147,13 +211,6 @@ class Quaternion(Sliceable):
         Raises:
             TypeError: If ``other`` is not a JAX array.
             ValueError: If the last dimension of ``other`` is not 3.
-
-        Example:
-            ```python
-            q = Quaternion.random(jax.random.PRNGKey(0))
-            point = jnp.array([1.0, 0.0, 0.0])
-            rotated = point @ q
-            ```
         """
         if not isinstance(other, jax.Array):
             raise TypeError(
@@ -164,7 +221,7 @@ class Quaternion(Sliceable):
             raise ValueError(
                 f"Expected last dimension of other to be 3, got {other.shape[-1]}"
             )
-        return jnp.einsum("...ij,...j->...i", self.as_matrix(), other)
+        return _rotate_vectors(self.components, other)
 
     def __mul__(self, other: object) -> Quaternion:
         """Compose two rotations via quaternion multiplication.
@@ -276,6 +333,16 @@ def _pow_quaternion(q: Array, exponent: Array | float) -> Array:
     new_v = axis * jnp.sin(new_angle / 2)
     new_w = jnp.cos(new_angle / 2)
     return jnp.concatenate([new_w[None], new_v])
+
+
+
+def _rotate_vectors(q: Array, vector: Array) -> Array:
+    """Rotate vectors with the TT semantic operation when available."""
+    leading_shape = jnp.broadcast_shapes(q.shape[:-1], vector.shape[:-1])
+    q_broadcast = jnp.broadcast_to(q, (*leading_shape, 4))
+    vector_broadcast = jnp.broadcast_to(vector, (*leading_shape, 3))
+    _ensure_tt_quaternion_rotate_lowering()
+    return _quaternion_rotate_p.bind(q_broadcast, vector_broadcast)
 
 
 @vectorize(signature="(4)->(3,3)")

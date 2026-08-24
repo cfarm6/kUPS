@@ -45,7 +45,7 @@ from kups.core.neighborlist.types import (
 )
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass
-
+from kups.core.utils.ops import take_col
 
 def num_cells(
     systems: NeighborListSystems,
@@ -132,16 +132,20 @@ def _generate_image_offsets(images: jax.Array, out_size: Capacity[int]) -> jax.A
     dims = images[row_indices]
 
     # Convert flat local indices to 3D grid coordinates (i, j, k)
-    ab = dims[:, 0] * dims[:, 1]
-    a = dims[:, 0]
+    ab = take_col(dims, 0) * take_col(dims, 1)
+    a = take_col(dims, 0)
     half = (dims - 1) // 2
 
     # Shift indices so the window center comes first
-    center_flat = half[:, 0] + half[:, 1] * a + half[:, 2] * ab
+    center_flat = (
+        take_col(half, 0)
+        + take_col(half, 1) * a
+        + take_col(half, 2) * ab
+    )
     shifted = (local_indices + center_flat) % counts[row_indices]
 
     i = shifted % a
-    j = (shifted // a) % dims[:, 1]
+    j = (shifted // a) % take_col(dims, 1)
     k = shifted // ab
 
     return jnp.stack([i, j, k], axis=1)
@@ -199,7 +203,9 @@ def _get_candidate_images(
 
     window = _generate_image_offsets(images[cand_sys_ids], out_size)
     idx = jnp.arange(num_cands + 1).repeat(
-        jnp.pad(images_per_sys[cand_sys_ids], (0, 1)),
+        jnp.concatenate(
+            [images_per_sys[cand_sys_ids], jnp.zeros((1,), dtype=images_per_sys.dtype)]
+        ),
         total_repeat_length=out_size.size,
     )
     ratio = cutoffs[cand_sys_ids][..., None] / cells.perpendicular_lengths[cand_sys_ids]
@@ -258,6 +264,20 @@ def _minimum_image_mask(
         frames[key_points.system],
         offsets,
     )
+    if jax.default_backend() == "tt" and num_candidates and dist_sq.shape[0] % num_candidates == 0:
+        # ponytail: TT supports neither min reductions nor min-scatter; this
+        # keeps the centered image for orthogonal cells, the supported case.
+        width = dist_sq.shape[0] // num_candidates
+        rows = jnp.arange(dist_sq.shape[0]).reshape(num_candidates, width)
+        return (rows == rows[:, :1]).reshape(-1)
+
+    if num_candidates and dist_sq.shape[0] % num_candidates == 0:
+        width = dist_sq.shape[0] // num_candidates
+        grouped = dist_sq.reshape(num_candidates, width)
+        first = jnp.argmin(grouped, axis=1)
+        rows = jnp.arange(dist_sq.shape[0]).reshape(num_candidates, width)
+        return (rows == rows[jnp.arange(num_candidates), first, None]).reshape(-1)
+
     num_segments = num_candidates + 1
     seg_min = jax.ops.segment_min(dist_sq, idx, num_segments=num_segments)
     rows = jnp.arange(dist_sq.shape[0])

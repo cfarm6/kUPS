@@ -41,6 +41,7 @@ from kups.core.neighborlist.types import (
 )
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, jit
+from kups.core.utils.ops import take_col, use_mask_selection
 
 
 @dataclass
@@ -52,7 +53,15 @@ class _FixedEdgesSelector[D: int]:
     def __call__(self, ctx: PipelineContext) -> CandidateBatch[D]:
         indices = self.indices.update_labels(ctx.keys.keys).indices
         positions = ctx.keys.data.positions.at[indices].get(mode="fill", fill_value=0)
-        deltas = positions[:, :1] - positions[:, 1:]
+        if use_mask_selection():
+            # tt port (wayfinder #107): keep-dim static slices of cap-height
+            # tables lower to full-tensor ttnn.slice CBs; take lowers to
+            # ttir.gather (DRAM-pipelined).
+            deltas = jnp.take(positions, jnp.array([0]), axis=-1) - jnp.take(
+                positions, jnp.array([1, 2]), axis=-1
+            )
+        else:
+            deltas = positions[:, :1] - positions[:, 1:]
         shifts = ctx.systems.data.cell.minimum_image_shifts(deltas)
         return CandidateBatch(
             edges=Edges(Index(ctx.keys.keys, indices), shifts),

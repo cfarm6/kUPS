@@ -28,7 +28,7 @@ from kups.core.neighborlist.types import (
 )
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import isin, jit
-from kups.core.utils.ops import where_broadcast_last
+from kups.core.utils.ops import take_col, where_broadcast_last
 
 
 class NeighborListChangesResult(NamedTuple):
@@ -80,7 +80,7 @@ def neighborlist_changes(
 
     # split into removed / added
     raw = all_edges.indices.indices  # (n_edges, 2)
-    c0, c1 = raw[:, 0], raw[:, 1]
+    c0, c1 = take_col(raw, 0), take_col(raw, 1)
     # Removed mask checks for edges that exist in the original set (both indices < N).
     removed_mask = (c0 < N) & (c1 < N)
 

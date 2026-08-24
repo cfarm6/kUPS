@@ -288,6 +288,10 @@ class HDF5StorageWriter[State, WriterConfig]:
     _bg_running: threading.Event = field(
         init=False, default_factory=threading.Event, repr=False
     )
+    _batch_treedefs: list[Any] = field(init=False, default_factory=list, repr=False)
+    _batch_group_indices: list[int] = field(
+        init=False, default_factory=list, repr=False
+    )
     _actual_steps: int = field(init=False, default=0, repr=False)
 
     def __enter__(self) -> Self:
@@ -336,6 +340,40 @@ class HDF5StorageWriter[State, WriterConfig]:
         self._actual_steps = step + 1
         assert self._bg_writer is not None, "Must be used inside a with-block"
         self._bg_writer.write(state, step)
+
+    def capture_batch(self, state: State) -> tuple[tuple[Any, ...], ...]:
+        """Extract non-Once logging leaves without transferring them to the host."""
+        captured: list[tuple[Any, ...]] = []
+        for i, group in enumerate(self._group_writers):
+            if isinstance(group.logging_frequency, Once):
+                continue
+            leaves, treedef = jax.tree.flatten(group.view(state))
+            if len(self._batch_treedefs) == len(self._batch_group_indices):
+                self._batch_group_indices.append(i)
+                self._batch_treedefs.append(treedef)
+            captured.append(tuple(leaves))
+        return tuple(captured)
+
+    def log_batch(self, data: tuple[tuple[Any, ...], ...], start_step: int) -> None:
+        """Queue a chunk of pre-extracted groups with one host transfer."""
+        leaves = jax.tree.leaves(data)
+        count = int(leaves[0].shape[0]) if leaves else 0
+        self._actual_steps = start_step + count
+        assert self._bg_writer is not None, "Must be used inside a with-block"
+        host_data = jax.device_get(data)
+        to_log: list[tuple[int, Index, Any]] = []
+        for i, treedef, group_data in zip(
+            self._batch_group_indices, self._batch_treedefs, host_data
+        ):
+            group = self._group_writers[i]
+            for offset in range(count):
+                step = start_step + offset
+                if group.logging_frequency.should_log(step):
+                    frame = treedef.unflatten([leaf[offset] for leaf in group_data])
+                    to_log.append(
+                        (i, group.logging_frequency.dataset_index(step), frame)
+                    )
+        self._bg_writer.data_queue.put(to_log)
 
     def _prepare_write(self, state: State, step: int) -> list[tuple[int, Index, Any]]:
         """Extract loggable data on the main thread (before JAX donation).

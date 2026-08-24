@@ -318,8 +318,14 @@ def _make_molecule(
     """
     chain = key_chain(key)
     motif_index = Index(motifs.keys, motifs.data.motif.where_flat(species_idx))
-    com = jax.random.uniform(next(chain), (3,), minval=-0.5, maxval=0.5) @ cell.vectors
-    rot = Quaternion.random(next(chain))
+    # tt's f64 RNG returns non-finite values; keep initial placement draws f32.
+    rng_dtype = jnp.float32 if jax.default_backend() == "tt" else None
+    com = jax.random.uniform(
+        next(chain), (3,), minval=-0.5, maxval=0.5, dtype=rng_dtype
+    ) @ cell.vectors
+    rot = Quaternion.from_uniform(
+        jax.random.uniform(next(chain), shape=(3,), dtype=rng_dtype)
+    )
     tpl = motifs[motif_index]
     n_a = len(tpl.positions)
     particles = Table.arange(

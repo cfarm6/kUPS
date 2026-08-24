@@ -486,7 +486,7 @@ def init_state(key: Array, config: Config) -> MCMCState:
         blocking_nlist = UniversalNeighborlistParameters(0, 0, 0, 0)
     logging.info(f"Estimated neighbor list parameters: {neighborlist_params}")
     min_half_box = float(system.data.cell.perpendicular_lengths.min() / 2)
-    return MCMCState(
+    state = MCMCState(
         particles=particles,
         groups=groups,
         motifs=motifs,
@@ -513,6 +513,16 @@ def init_state(key: Array, config: Config) -> MCMCState:
             ParameterSchedulerState.create(n_sys), label=SystemId
         ),
     )
+    if jax.default_backend() == "tt":
+        # tt port (wayfinder #108): keep every floating-point state leaf in
+        # f32; stress autodiff otherwise rebuilds f64 edge shifts.
+        state = jax.tree.map(
+            lambda x: x.astype(jnp.float32)
+            if getattr(x, "dtype", None) == jnp.float64
+            else x,
+            state,
+        )
+    return state
 
 
 def make_guest_stress(
