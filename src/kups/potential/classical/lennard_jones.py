@@ -56,6 +56,7 @@ from kups.core.typing import (
     SystemId,
 )
 from kups.core.utils.jax import dataclass, field, jit
+from kups.core.utils.ops import take_col
 from kups.potential.common.energy import (
     EnergyFunction,
     PotentialFromEnergy,
@@ -161,7 +162,7 @@ def lennard_jones_edge_energy(inp: LennardJonesInput) -> Array:
         # lowering routes to the f32-preserving ttir.gather path (#75) — the
         # parameter tables are already f32 on tt (LjPotentialConfig.build).
         n_species = inp.parameters.sigma.shape[0]
-        flat_idx = edg_species[:, 0] * n_species + edg_species[:, 1]
+        flat_idx = take_col(edg_species, 0) * n_species + take_col(edg_species, 1)
         epsilon = inp.parameters.epsilon.reshape(-1)[flat_idx]
         sigma = inp.parameters.sigma.reshape(-1)[flat_idx]
     else:
@@ -172,8 +173,8 @@ def lennard_jones_edge_energy(inp: LennardJonesInput) -> Array:
         # (fp32_dest_acc_en=false default) — r2 comes back f16-rounded (0.17
         # error at r2~330), corrupting every LJ force. Explicit add tree stays
         # on the exact SFPU f32 path. CPU keeps the reduce.
-        _s = graph.edge_shifts[:, 0] ** 2
-        r2 = _s[..., 0] + _s[..., 1] + _s[..., 2]
+        _s = take_col(graph.edge_shifts, 0, axis=-2) ** 2
+        r2 = take_col(_s, 0) + take_col(_s, 1) + take_col(_s, 2)
     else:
         r2 = jnp.sum(graph.edge_shifts[:, 0] ** 2, axis=-1)
     c6 = (sigma**2 / r2) ** 3
@@ -187,13 +188,13 @@ def lennard_jones_edge_energy(inp: LennardJonesInput) -> Array:
         # Unsafe occ[idx] gather on TT (#145); use fill-gather like #75/#107.
         edge_idx = graph.edges.indices
         occ = graph.particles.occupation
-        end0 = edge_idx[:, 0].indices
-        end1 = edge_idx[:, 1].indices
+        end0 = edge_idx._take_col(0).indices
+        end1 = edge_idx._take_col(1).indices
         both_occ = (
             occ.at[end0].get(mode="fill", fill_value=False)
             & occ.at[end1].get(mode="fill", fill_value=False)
-            & edge_idx.valid_mask[:, 0]
-            & edge_idx.valid_mask[:, 1]
+            & take_col(edge_idx.valid_mask, 0)
+            & take_col(edge_idx.valid_mask, 1)
         )
         edge_energy = edge_energy * both_occ
     return edge_energy

@@ -105,7 +105,7 @@ class HyperGraph(PointCloud[Part, Sys], Generic[Part, Sys, Degree]):
 
     @property
     def edge_batch_mask(self) -> Index[SystemId]:
-        return self.particles[self.edges.indices[:, 0]].system
+        return self.particles[self.edges.indices._take_col(0)].system
 
     @overload
     def sorted_by_system(

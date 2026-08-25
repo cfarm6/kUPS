@@ -60,7 +60,7 @@ class InclusionMatchMask:
     def __call__[D: int](self, batch: CandidateBatch[D], ctx: PipelineContext) -> Array:
         if ctx.queries is None:
             edge_incl = ctx.keys[batch.edges.indices].inclusion.indices
-            return (edge_incl == edge_incl[:, :1]).all(axis=-1)
+            return (edge_incl == take_col(edge_incl, 0)[..., None]).all(axis=-1)
 
         key_incl, query_incl = Index.match(
             ctx.keys[batch.key_idx].inclusion, ctx.queries[batch.query_idx].inclusion

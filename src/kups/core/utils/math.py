@@ -203,12 +203,23 @@ def triangular_3x3_from_tril(tril: Array) -> Array:
              [m10, m11,   0],
              [m20, m21, m22]]
     """
-    zero = jnp.zeros_like(tril[..., :1])
+    if jax.default_backend() == "tt":
+        # tt port (wayfinder #165): static feature slices of the 614400-row
+        # GCMC edge-frame table lower to ttnn.slice with a >L1 output CB.
+        # gather is DRAM-pipelined (#107) and keeps the cap on device.
+        m00 = jnp.take(tril, jnp.array([0]), axis=-1)
+        m10_m11 = jnp.take(tril, jnp.array([1, 2]), axis=-1)
+        m20_m21_m22 = jnp.take(tril, jnp.array([3, 4, 5]), axis=-1)
+    else:
+        m00 = tril[..., 0:1]
+        m10_m11 = tril[..., 1:3]
+        m20_m21_m22 = tril[..., 3:6]
+    zero = jnp.zeros_like(m00)
     return jnp.stack(
         [
-            jnp.concatenate([tril[..., 0:1], zero, zero], axis=-1),
-            jnp.concatenate([tril[..., 1:3], zero], axis=-1),
-            tril[..., 3:6],
+            jnp.concatenate([m00, zero, zero], axis=-1),
+            jnp.concatenate([m10_m11, zero], axis=-1),
+            m20_m21_m22,
         ],
         axis=-2,
     )
@@ -396,6 +407,50 @@ def triangular_3x3_matmul(
 
     @vectorize(signature="(3,3),(3)->(3)")
     def inner(L: Array, x: Array) -> Array:
+        if jax.default_backend() == "tt":
+            # tt port (wayfinder #165): feature slices in the vmap lift to
+            # cap-height ttnn.slice CBs (2.57 MB for RUBTAK's 614400 edges).
+            # Gather each scalar and keep the f32 add tree explicit.
+            def elem(row: int, col: int) -> Array:
+                return jnp.take(jnp.take(L, row, axis=-2), col, axis=-1)
+
+            x0, x1, x2 = (jnp.take(x, i, axis=-1) for i in range(3))
+            l00, l10, l11 = elem(0, 0), elem(1, 0), elem(1, 1)
+            l20, l21, l22 = elem(2, 0), elem(2, 1), elem(2, 2)
+            l01, l02, l12 = elem(0, 1), elem(0, 2), elem(1, 2)
+            if side is MatmulSide.RIGHT:
+                if lower:
+                    return jnp.stack(
+                        [
+                            l00 * x0 + l10 * x1 + l20 * x2,
+                            l11 * x1 + l21 * x2,
+                            l22 * x2,
+                        ]
+                    )
+                return jnp.stack(
+                    [
+                        l00 * x0,
+                        l01 * x0 + l11 * x1,
+                        l02 * x0 + l12 * x1 + l22 * x2,
+                    ]
+                )
+            if side is MatmulSide.LEFT:
+                if lower:
+                    return jnp.stack(
+                        [
+                            l00 * x0,
+                            l10 * x0 + l11 * x1,
+                            l20 * x0 + l21 * x1 + l22 * x2,
+                        ]
+                    )
+                return jnp.stack(
+                    [
+                        l00 * x0 + l01 * x1 + l02 * x2,
+                        l11 * x1 + l12 * x2,
+                        l22 * x2,
+                    ]
+                )
+            raise ValueError(f"Invalid side argument: {side}")
         if cuda:
             if side is MatmulSide.RIGHT:
                 return jnp.einsum("ji,j->i", L, x)
