@@ -468,8 +468,10 @@ def init_state(key: Array, config: Config) -> MCMCState:
         # keeps the full estimate to preserve reference runs.
         neighborlist_params = UniversalNeighborlistParameters(
             avg_edges=neighborlist_params.avg_edges,
-            avg_candidates=min(neighborlist_params.avg_candidates, 704),
-            avg_image_candidates=min(neighborlist_params.avg_image_candidates, 704),
+            avg_candidates=min(neighborlist_params.avg_candidates, 512),
+            avg_image_candidates=min(
+                neighborlist_params.avg_image_candidates, 512
+            ),
             cells=neighborlist_params.cells,
         )
     if blocking_spheres.radii.shape[0] > 0:
